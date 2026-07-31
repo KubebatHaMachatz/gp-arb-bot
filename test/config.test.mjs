@@ -261,6 +261,21 @@ test('GPA_BOOK_STALE_MS must be at least 1 — a 0ms gate would reject every boo
   assert.equal(loadConfig({ GPA_BOOK_STALE_MS: '1' }).bookStaleMs, 1);
 });
 
+test('GPA_BOOK_STALE_MS is capped — a huge value is no gate at all, not a lenient one', () => {
+  // The gate decides whether money is committed against a book image that may already
+  // be gone. Bounded in BOTH directions on purpose: 999999999ms is an 11-day "freshness"
+  // window, which silently disarms the guard rather than loosening it.
+  assert.equal(loadConfig({ GPA_BOOK_STALE_MS: '60000' }).bookStaleMs, 60000);
+  assert.throws(
+    () => loadConfig({ GPA_BOOK_STALE_MS: '60001' }),
+    /GPA_BOOK_STALE_MS must be <= 60000, got 60001/,
+  );
+  assert.throws(
+    () => loadConfig({ GPA_BOOK_STALE_MS: '999999999' }),
+    /GPA_BOOK_STALE_MS must be <= 60000, got 999999999/,
+  );
+});
+
 test('GPA_MAX_SET_SIZE_USD must be strictly positive', () => {
   assert.throws(() => loadConfig({ GPA_MAX_SET_SIZE_USD: '0' }), /GPA_MAX_SET_SIZE_USD must be > 0/);
   assert.throws(() => loadConfig({ GPA_MAX_SET_SIZE_USD: '-5' }), /GPA_MAX_SET_SIZE_USD must be > 0/);

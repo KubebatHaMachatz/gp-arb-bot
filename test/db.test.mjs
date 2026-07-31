@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { DatabaseSync } from 'node:sqlite';
+
 import { openDb, retentionCutoffMs } from '../lib/db.mjs';
 
 /** Build a scratch directory. Helpers build INPUTS, never expected outputs. */
@@ -238,6 +240,91 @@ test('a read-only handle does not create the parent directory or the file', () =
     const path = join(dir, 'absent', 'a.db');
     assert.throws(() => openDb(path, { readOnly: true }));
     assert.equal(existsSync(join(dir, 'absent')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── openDb: failure after the handle is already open ────────────────────────
+
+/**
+ * Poison a DB so that applying the schema fails AFTER the handle is open.
+ *
+ * A table occupying an index's name is a realistic "pre-existing DB of a different
+ * shape" case, and unlike a column mismatch it genuinely throws — `CREATE TABLE
+ * IF NOT EXISTS` is a no-op against a differently-shaped table, but
+ * `CREATE INDEX IF NOT EXISTS` against an existing TABLE of that name is an error.
+ * Helper builds an INPUT (a poisoned file), never an expected output.
+ */
+function poisonedDbPath(dir) {
+  const path = join(dir, 'poisoned.db');
+  const db = openDb(path);
+  db.close();
+  const raw = new DatabaseSync(path);
+  raw.exec('DROP INDEX idx_markets_event');
+  raw.exec('CREATE TABLE idx_markets_event (x INTEGER)');
+  raw.close();
+  return path;
+}
+
+test('openDb propagates a post-open failure instead of swallowing it', () => {
+  const dir = scratch();
+  try {
+    assert.throws(
+      () => openDb(poisonedDbPath(dir)),
+      /there is already a table named idx_markets_event/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('openDb CLOSES the handle when configuration fails after opening it', () => {
+  const dir = scratch();
+  try {
+    const path = poisonedDbPath(dir);
+    // Hold a reference from outside: openDb throws, so the caller never receives the
+    // handle and could not otherwise observe whether it was released. A leak here
+    // compounds, because a scanner under a supervision loop retries openDb.
+    let handle = null;
+    assert.throws(() =>
+      openDb(path, {
+        open: (f, options) => {
+          handle = new DatabaseSync(f, options);
+          return handle;
+        },
+      }),
+    );
+    assert.notEqual(handle, null, 'the injected opener should have been called');
+    assert.equal(handle.isOpen, false, 'the handle must be closed before the error escapes');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('openDb returns an OPEN handle on the success path', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'ok.db'));
+    assert.equal(db.isOpen, true);
+    db.close();
+    assert.equal(db.isOpen, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('openDb enables foreign key enforcement explicitly on both handle kinds', () => {
+  const dir = scratch();
+  const path = join(dir, 'a.db');
+  try {
+    const writer = openDb(path);
+    assert.equal(writer.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
+    writer.close();
+
+    const reader = openDb(path, { readOnly: true });
+    assert.equal(reader.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
+    reader.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
