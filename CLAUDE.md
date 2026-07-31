@@ -116,7 +116,7 @@ a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set
 | Var | Default | Range | Effect |
 |---|---|---|---|
 | `GPA_DB` | `data/arb.db` | non-empty | SQLite file path |
-| `GPA_BOOK_STALE_MS` | `750` | ≥ 1 | Freshness gate — never act on a book image older than this. **0 is rejected**: it would reject every book. |
+| `GPA_BOOK_STALE_MS` | `750` | 1–60000 | Freshness gate — never act on a book image older than this. Bounded **both** ways: `0` rejects every book, and a huge value is not a lenient gate but *no* gate. |
 | `GPA_MIN_NET_EDGE` | `0.005` | (0, 1] | Minimum post-fee edge per complete set, as a price fraction |
 | `GPA_MAX_SET_SIZE_USD` | `250` | > 0 | Hard cap on notional per complete set |
 | `GPA_DEPTH_SAFETY_FACTOR` | `0.5` | (0, 1] | Size to `min(depth) × this`. **0 is rejected** — it is not "disabled", it silently sizes every trade to nothing. |
