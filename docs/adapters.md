@@ -32,7 +32,7 @@ is written.
 
 | Venue | Discovery | Book | Economics | Complete-set mechanics | Auth (reads) | Adapter |
 |---|---|---|---|---|---|---|
-| **Polymarket** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-5) |
+| **Polymarket** | ✅ | ✅ | ⛔ category not derivable | ✅ grouping | ✅ none needed | BLOCKED (A-5) |
 | **Kalshi** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-8) |
 | **Limitless** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-9) |
 
@@ -109,6 +109,118 @@ flat outside them.
 The two curves are **not mirror images** and their ordering inverts: at p=0.50 BUY costs
 2× SELL, but by p=0.90 SELL is the dearer side. `limitlessTakerFee` therefore **requires**
 an explicit side rather than defaulting one.
+
+## Polymarket — read-path spike, 2026-07-31 (A-5)
+
+Live against the public endpoints, no auth used or needed. **Everything structural
+verified; the fee category did NOT verify and blocks the adapter — see the ⛔ below.**
+
+### ✅ Set grouping — the single most important fact, and it is confirmed
+
+A Polymarket neg-risk set is **not** one market with N outcomes. Each outcome is its
+**own binary market**, with its own `conditionId` and its own YES/NO token pair. What
+ties them into one mutually-exclusive set is **`neg_risk_market_id`** (CLOB) /
+**`negRiskMarketID`** (Gamma), identical strings.
+
+Live sample — event `next-prime-minister-of-ethiopia` (`negRisk: true`,
+`negRiskMarketID: 0x55ab76…6500`) contains **33 markets**, each `outcomes:
+["Yes","No"]`. So:
+
+| Complete set | Grouped by | Legs |
+|---|---|---|
+| **binary** | `conditionId` | the YES + NO of that one market |
+| **neg_risk** | `negRiskMarketID` | the **YES token of every market** in the group |
+
+`negRiskAugmented: true` events carry an explicit **`negRiskOther: true`** market
+("Other", exactly 1 of the 33 above). That leg is part of the complete set — omitting it
+would understate the cost of covering every outcome.
+
+Sources: <https://docs.polymarket.com/concepts/negative-risk>, live
+`GET https://gamma-api.polymarket.com/events?closed=false`,
+`GET https://clob.polymarket.com/markets/{conditionId}`.
+
+### ✅ Discovery and market metadata
+
+- **Gamma** `GET https://gamma-api.polymarket.com/events?closed=false&limit=&order=` —
+  events with a nested `markets[]` array. Public, no auth (HTTP 200 unauthenticated).
+- **CLOB** `GET https://clob.polymarket.com/markets/{conditionId}` — per-market detail;
+  `GET /sampling-markets` returns 1000 markets in one call. Public, no auth.
+- Fields confirmed present and populated on live data:
+
+| Need | Gamma | CLOB |
+|---|---|---|
+| condition id | `conditionId` | `condition_id` |
+| token ids | `clobTokenIds` (JSON **string** of `[YES, NO]`) | `tokens[].token_id` |
+| outcome labels | `outcomes` (JSON **string** `'["Yes", "No"]'`) | `tokens[].outcome` |
+| neg-risk group | `negRiskMarketID` | `neg_risk_market_id` |
+| tick size | `orderPriceMinTickSize` | `minimum_tick_size` |
+| min order size | `orderMinSize` | `minimum_order_size` |
+| set-member label | `groupItemTitle` | — |
+
+- **`minimum_order_size` is `5` on all 1000 sampled markets.** Units re-confirmed as a
+  **share count** (consistent with the sibling repo's live size-rejection finding).
+- **Tick size varies *within* a single event**: in the Ethiopia event, 8 markets at
+  `0.001` and 25 at `0.01`. Across 1000 sampled: 390 at `0.001`, 610 at `0.01`. Tick is
+  therefore **per market**, never per event or per venue.
+- `neg_risk` is roughly half the universe: 504 of 1000 sampled markets.
+
+### ⛔ BLOCKER — the fee category is NOT derivable from the read path
+
+`lib/fees.mjs` needs a category (`politics`, `crypto`, …) to pick the taker rate. **No
+such field exists** on either the Gamma or the CLOB market object. What exists instead:
+
+1. **`tags`** — free-form editorial labels (`['Politics', 'Elections', 'Global
+   Elections', 'Ethiopia', 'Main Election']`). Not a fee enum. Measured against 1000
+   live markets:
+   - **37 markets carry no `lib/fees.mjs` category name in their tags at all** — e.g.
+     `['Business','AI','IPOs','Big Tech']`, `['Fed','Fed Rates','Economy','Macro Single',…]`,
+     `['Pandemics','World','Climate & Science']`.
+   - Worse, tags **cross-cut actual fee status**: `'Politics'` appears on **45 of the 66**
+     markets the venue charges **nothing** for *and* on **544 of the 934** it does charge.
+     A tag→category mapping would therefore assign a non-zero rate to genuinely fee-free
+     markets and vice versa — silently, in both directions.
+   - Tags are also multi-valued and unordered for this purpose; a market tagged both
+     `Politics` and `Crypto` has no defined winner.
+2. **`taker_base_fee` / `maker_base_fee`** — present per market, and they **partition the
+   universe exactly the way the fee schedule implies**: `0` on 66 markets, `1000` on 934,
+   and the 66 are overwhelmingly geopolitical (`Geopolitics` 48, `World` 34, plus Middle
+   East / Israel / Venezuela / Russia / Iran), matching [ANALYSIS.md](../ANALYSIS.md)'s
+   "geopolitics is still fee-free". **But the units are ❓ and the field is not safe to
+   read as the taker rate**: `taker_base_fee` is *identical* to `maker_base_fee` on every
+   market sampled, and Polymarket charges takers while rebating makers — so a value equal
+   on both sides is not a per-side rate. `1000` also matches none of the published rates
+   (0.04 / 0.05 / 0.07) under any obvious scaling.
+3. **`GET /fees`** — the documented "fee schedule per instrument type and category"
+   endpoint is `api.perpetuals.polymarket.com/v1/info/fees`, for **perpetual futures**
+   (categories equity / commodity / index / crypto). A **different product**; it does not
+   describe event contracts. `clob.polymarket.com/fees` and `/fee-schedule` are 404.
+4. Gamma reports `feesEnabled: false` and `feeType: null` on every market in the sampled
+   neg-risk event, which is a *third* signal that does not obviously reconcile with the
+   published per-category schedule.
+
+**Consequence — the adapter is not written.** Guessing a tag→category mapping is exactly
+the failure `lib/fees.mjs` was built to prevent: a wrong rate does not produce a slightly
+wrong number, it manufactures or destroys edge silently, and the measurement above shows
+a tag-based guess would be wrong in both directions on real markets. Per CLAUDE.md §0
+this stays ❓ until pinned against a primary source. **Operator decision required — see
+the open question below.**
+
+### ❓ Open questions blocking A-5
+
+- What are `taker_base_fee` / `maker_base_fee` denominated in, and is either the
+  effective per-market taker rate? (If yes, this is *better* than a category lookup — it
+  is the venue's own per-market ground truth and would remove the category concept from
+  the adapter entirely.)
+- Is there any authenticated or undocumented endpoint that returns a market's fee
+  category / effective rate?
+- Does `feesEnabled: false` mean this market charges no taker fee today, overriding the
+  published category schedule?
+
+### ✅ Auth
+
+Every read used above — Gamma events, CLOB `/markets/{conditionId}`,
+`/sampling-markets` — returned HTTP 200 with **no credentials**. Nothing on the read path
+needs auth, as assumed.
 
 ## Leads to verify (NOT yet facts)
 
