@@ -34,7 +34,7 @@ is written.
 |---|---|---|---|---|---|---|
 | **Polymarket** | ✅ | ✅ | ✅ via `feeType` | ✅ grouping | ✅ none needed | ✅ A-5 |
 | **Kalshi** | ✅ | ✅ | ✅ single rate | ✅ grouping | ✅ none needed | ✅ A-8 — but see the ⚠️ |
-| **Limitless** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-9) |
+| **Limitless** | ✅ spiked | ❓ | ✅ curve | ❓ | ✅ none needed | ⏸ A-9 — scope questioned, see below |
 
 No adapter code exists yet. Each row is filled in by its own verify-first spike, logged
 below, before the corresponding item in [PLAN.md](../PLAN.md) is built.
@@ -311,6 +311,48 @@ Two practical implications:
    out of scope for a read-only measurement phase.
 2. Running this scanner continuously is not recommended: 75,817 sets means a crawl writes
    tens of thousands of rows per sampling window. Use `--once` for a point-in-time read.
+
+## Limitless — read-path spike, 2026-07-31 (A-9, partial)
+
+`GET https://api.limitless.exchange/markets/active?limit=25` — public, no auth, HTTP 200.
+
+### ⏸ There are no multi-outcome sets to arbitrage here
+
+Across the whole active universe sampled:
+
+| field | value |
+|---|---|
+| `marketType` | `single` — **25 of 25** |
+| `groupId` | unset on all 25 |
+| `negRiskRequestId` | unset on all 25 |
+| `isOther` | false on all 25 |
+| `tradeType` | `clob` on all 25 |
+
+`GET /markets/groups` returns **400** and `GET /markets` **404**, so no grouped-market
+listing is exposed. Every active market is a short-horizon crypto up/down window (`BTC Up
+or Down - 5 Min`, `ETH … 15 Min`, `DOGE … Hourly`, …).
+
+**Consequence for this repo.** The neg-risk half of the thesis — the shape that produced
+$29M of the measured $39.6M, and the reason this repo groups by event at all — **does not
+exist on Limitless**. What remains is the binary YES+NO case on the most contested,
+fastest-moving instrument the venue lists.
+
+That is not nothing, but three things make it a poor next target:
+
+1. **Its fee curve is the harshest of the three.** A flat 3.00% on buys below $0.50 means
+   a complete set near even odds costs ~3¢ in fees — comparable to Polymarket's *crypto*
+   rate, with no fee-free bucket anywhere to offset it.
+2. **The instrument is already studied next door.** The sibling
+   [`prediction-market-mm`](../../prediction-market-mm) repo exists to measure exactly
+   these 5/15-min crypto windows, with a live corpus going back to 2026-07-03.
+3. **The transport is the fiddliest.** Socket.IO on a non-default `/markets` namespace
+   with Engine.IO framing, versus a plain WebSocket and a REST crawl for the other two.
+
+**Recommendation: reorder.** Finish A-10 (operational hardening) so the Polymarket
+scanner — the one venue where the thesis genuinely applies and the data is fresh — can be
+left running for the week that gates Phase 2. Revisit Limitless only if that week's
+Polymarket numbers justify widening, at which point the binary-only scope should be a
+deliberate choice rather than an inherited one.
 
 ## Leads to verify (NOT yet facts)
 
