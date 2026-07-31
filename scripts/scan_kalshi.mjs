@@ -108,15 +108,27 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('unhandledRejection', (err) => log('unhandled rejection:', err?.message ?? String(err)));
 if (runSeconds > 0) setTimeout(() => shutdown(`--seconds ${runSeconds}`), runSeconds * 1000);
 
-// Sequential, never on a timer: a crawl already takes ~54s, so overlapping runs would
-// stack up requests and earn a 429 rather than fresher data.
+/**
+ * A floor between crawls.
+ *
+ * Sequential and never on a timer: a crawl already takes ~34-54s, so overlapping runs
+ * would stack requests and earn a 429 rather than fresher data. The floor exists because
+ * "the crawl is slow" is an observation, not a guarantee — a shrunken universe or a
+ * cached response would otherwise let the loop spin, hammering the venue and the
+ * database.
+ */
+const MIN_CRAWL_GAP_MS = 5000;
+
 do {
+  const started = Date.now();
   try {
     await crawlAndScan();
   } catch (err) {
     log('crawl failed:', err.message);
-    if (!once && !stopping) await new Promise((r) => setTimeout(r, 5000));
   }
-} while (!once && !stopping);
+  if (once || stopping) break;
+  const gap = MIN_CRAWL_GAP_MS - (Date.now() - started);
+  if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+} while (!stopping);
 
 if (once) shutdown('--once');

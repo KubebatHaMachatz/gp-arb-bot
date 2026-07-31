@@ -366,17 +366,34 @@ test('discoverMarkets pages by cursor and normalizes nested events', async () =>
   assert.equal(urls.length, 2, 'stops on the empty cursor');
 });
 
-test('discoverMarkets stops rather than looping on a repeated cursor', async () => {
-  // A server that echoes the same cursor would otherwise page until maxPages, silently
-  // multiplying every row.
+test('a repeated cursor cannot duplicate rows', async () => {
+  // Stopping after consuming the echo would be worse than looping: duplicated rows give
+  // a binary group four legs instead of two, and groupIntoSets drops it as incomplete —
+  // so a cursor loop would silently zero the crawl out rather than inflate it.
   let calls = 0;
   const fetchImpl = async () => {
     calls += 1;
     return { ok: true, status: 200, json: async () => ({ events: [REAL_EVENT], cursor: 'same' }) };
   };
-  const rows = await discoverMarkets({ fetchImpl, pageSize: 1, maxPages: 20 });
-  assert.equal(calls, 2, 'first page, then one repeat detected');
-  assert.equal(rows.length, 8, 'the repeat page was consumed before the check');
+  const rows = await discoverMarkets({ fetchImpl, pageSize: 1, maxPages: 20, sleep: async () => {} });
+  // An echo is only detectable once seen twice, so the repeat page does arrive — which
+  // is exactly why rows are deduped by token id rather than trusting the cursor.
+  assert.equal(calls, 2, 'and then never again');
+  assert.equal(rows.length, 4, 'one event, two markets, two sides -- NO duplicates');
+  // and the rows still group into complete sets, which duplicates would have prevented
+  const sets = groupIntoSets(rows);
+  assert.equal(sets.filter((s) => s.kind === KIND_BINARY).length, 2);
+});
+
+test('discoverMarkets does not re-fetch a cursor seen on an EARLIER page', async () => {
+  const cursors = ['c1', 'c2', 'c1'];
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return { ok: true, status: 200, json: async () => ({ events: [REAL_EVENT], cursor: cursors.shift() ?? '' }) };
+  };
+  await discoverMarkets({ fetchImpl, maxPages: 20, sleep: async () => {} });
+  assert.equal(calls, 3, 'stops when c1 comes round again');
 });
 
 test('discoverMarkets stops at maxPages', async () => {
