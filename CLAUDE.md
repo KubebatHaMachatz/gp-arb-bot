@@ -191,6 +191,28 @@ npm run coverage  # native line/branch coverage per lib file
 npm run mutate    # Stryker mutation score → reports/mutation/mutation.html
 ```
 
+## 5a. Running it
+
+Every entry point has an npm script. Prefer them: `npm run` executes from the package
+root, so they work from any directory in the repo, whereas `node scripts/…` is silently
+cwd-dependent and fails with a bare "Cannot find module" from anywhere else.
+
+```bash
+npm run scan:polymarket
+npm run watchdog
+npm run dashboard
+npm run launchd:install -- --dry-run     # note the `--`, which forwards flags
+```
+
+**The `node` written into a plist must be a durable path.** `process.execPath` resolves
+symlinks, so on this machine it lands in `~/.hermes/node/bin/node` — a tool-managed
+private runtime. A LaunchAgent pointing there breaks *permanently and silently* the day
+that tool upgrades: launchd cannot spawn, `KeepAlive` retries every 10s forever, and the
+only trace is the system log. `launchd_install` therefore prefers a system prefix
+(`/opt/homebrew/bin/node`, `/usr/local/bin/node`, `/usr/bin/node`), verifies it meets
+`engines`, warns loudly if it has to fall back to a hidden-directory runtime, and takes
+`--node /absolute/path` to override.
+
 The `mutate` glob in `stryker.config.mjs` must stay `lib/**/*.mjs`. The narrower
 `lib/*.mjs` silently excludes every subdirectory while still reporting a healthy-looking
 score — a sibling repo shipped exactly that bug and trusted the number for two phases.

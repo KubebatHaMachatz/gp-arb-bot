@@ -2,8 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DEFAULT_NODE_CANDIDATES,
   LABEL_PREFIX,
   assertNoSecrets,
+  flagValue,
+  isDurableNodePath,
   isSecretKey,
   labelFor,
   plistFor,
@@ -196,4 +199,104 @@ test('every path in the plist is absolute — launchd has no working directory o
     assert.throws(() => plistFor({ ...BASE, [field]: 'relative/path' }), /absolute/, field);
   }
   assert.throws(() => plistFor({ ...BASE, programArguments: ['node', '/repo/s.mjs'] }), /absolute/);
+});
+
+// ── choosing a node binary that will still exist next month ─────────────────
+
+const HOME = '/Users/x';
+
+test('a node under a system prefix is durable', () => {
+  for (const p of ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']) {
+    assert.equal(isDurableNodePath(p, HOME), true, p);
+  }
+});
+
+test('a node inside a hidden directory under $HOME is NOT durable', () => {
+  // This is the whole point. Per-user version managers and tool-managed runtimes move,
+  // upgrade and vanish; a launchd plist pointing into one breaks permanently and
+  // silently -- launchd cannot spawn, KeepAlive retries every ThrottleInterval forever,
+  // and the only trace is the system log.
+  for (const p of [
+    '/Users/x/.hermes/node/bin/node',
+    '/Users/x/.nvm/versions/node/v22.5.0/bin/node',
+    '/Users/x/.volta/tools/image/node/22.5.0/bin/node',
+    '/Users/x/.asdf/installs/nodejs/22.5.0/bin/node',
+    '/Users/x/.fnm/node-versions/v22.5.0/installation/bin/node',
+    '/Users/x/.local/bin/node',
+  ]) {
+    assert.equal(isDurableNodePath(p, HOME), false, p);
+  }
+});
+
+test('a visible directory under $HOME is durable — hidden is the signal, not "under home"', () => {
+  assert.equal(isDurableNodePath('/Users/x/bin/node', HOME), true);
+  assert.equal(isDurableNodePath('/Users/x/tools/node/bin/node', HOME), true);
+});
+
+test('a hidden directory OUTSIDE $HOME is left alone', () => {
+  // The rule targets per-user runtime managers. A system path is not this script's
+  // business to second-guess.
+  assert.equal(isDurableNodePath('/opt/.internal/bin/node', HOME), true);
+});
+
+test('isDurableNodePath is not fooled by a home-prefix collision', () => {
+  // "/Users/xyz" starts with "/Users/x" as a STRING but is a different user's home.
+  assert.equal(isDurableNodePath('/Users/xyz/.nvm/bin/node', HOME), true);
+});
+
+test('isDurableNodePath handles a home with a trailing slash', () => {
+  assert.equal(isDurableNodePath('/Users/x/.nvm/bin/node', '/Users/x/'), false);
+});
+
+test('DEFAULT_NODE_CANDIDATES lists durable system prefixes, most-preferred first', () => {
+  assert.ok(Array.isArray(DEFAULT_NODE_CANDIDATES));
+  assert.ok(DEFAULT_NODE_CANDIDATES.length > 0);
+  for (const p of DEFAULT_NODE_CANDIDATES) {
+    assert.equal(p.startsWith('/'), true, p);
+    assert.equal(isDurableNodePath(p, HOME), true, p);
+  }
+});
+
+// ── flag parsing: never guess a missing value ───────────────────────────────
+
+test('flagValue reads the token after the flag', () => {
+  assert.deepEqual(flagValue(['--service', 'watchdog'], '--service'), {
+    value: 'watchdog',
+    error: null,
+  });
+  assert.deepEqual(flagValue(['--dry-run', '--node', '/usr/bin/node'], '--node'), {
+    value: '/usr/bin/node',
+    error: null,
+  });
+});
+
+test('an absent flag is null with no error — not supplied is not an error', () => {
+  assert.deepEqual(flagValue(['--dry-run'], '--service'), { value: null, error: null });
+  assert.deepEqual(flagValue([], '--service'), { value: null, error: null });
+});
+
+test('a TRAILING value-taking flag is an error, never "not supplied"', () => {
+  // This is the whole point. Falling through to "not supplied" makes a trailing
+  // --service select EVERY service: an install bootstraps three LaunchAgents when one was
+  // asked for, and an uninstall tears down a running measurement.
+  const r = flagValue(['--dry-run', '--service'], '--service');
+  assert.equal(r.value, null);
+  assert.match(r.error, /--service requires a value/);
+});
+
+test('a following flag does not become the value', () => {
+  // `--service --dry-run` would otherwise report `unknown service "--dry-run"`, which
+  // names the wrong problem and sends the operator looking at the service list.
+  const r = flagValue(['--service', '--dry-run'], '--service');
+  assert.equal(r.value, null);
+  assert.match(r.error, /requires a value/);
+});
+
+test('a value that merely contains dashes is fine', () => {
+  assert.equal(flagValue(['--service', 'scan-polymarket'], '--service').value, 'scan-polymarket');
+});
+
+test('a negative-looking value is still a value', () => {
+  // Only a leading `--` marks a flag; a single dash is not this parser's concern.
+  assert.equal(flagValue(['--node', '-'], '--node').value, '-');
 });
