@@ -12,10 +12,12 @@ import {
   createBookStore,
   createPersistPolicy,
   indexSetsByToken,
+  reconnectDelayMs,
   parseFrame,
   persistOpportunity,
   scanSets,
   setsForTokens,
+  tokenSetChanged,
   tokensForSets,
   tokensInMessage,
 } from '../lib/scanner_polymarket.mjs';
@@ -758,4 +760,74 @@ test('the policy collapses a flood of repeated stale-book skips', () => {
     if (policy.shouldPersist(skip, 1_000_000 + i)) written += 1;
   }
   assert.equal(written, 1);
+});
+
+
+// ── connection lifecycle ────────────────────────────────────────────────────
+
+test('tokenSetChanged is order-insensitive', () => {
+  // Discovery returns markets in whatever order the venue paginated them; a reshuffle is
+  // not a rotation and must not trigger a needless reconnect.
+  assert.equal(tokenSetChanged(['a', 'b'], ['b', 'a']), false);
+  assert.equal(tokenSetChanged([], []), false);
+  assert.equal(tokenSetChanged(['a'], ['a']), false);
+});
+
+test('tokenSetChanged detects an added, removed or swapped token', () => {
+  assert.equal(tokenSetChanged(['a'], ['a', 'b']), true, 'added');
+  assert.equal(tokenSetChanged(['a', 'b'], ['a']), true, 'removed');
+  assert.equal(tokenSetChanged(['a', 'b'], ['a', 'c']), true, 'swapped');
+  assert.equal(tokenSetChanged([], ['a']), true, 'first discovery');
+});
+
+test('reconnectDelayMs backs off by doubling and then caps', () => {
+  // 1000 * 2^n, capped at 30000
+  assert.equal(reconnectDelayMs(0), 1000);
+  assert.equal(reconnectDelayMs(1), 2000);
+  assert.equal(reconnectDelayMs(2), 4000);
+  assert.equal(reconnectDelayMs(3), 8000);
+  assert.equal(reconnectDelayMs(4), 16000);
+  assert.equal(reconnectDelayMs(5), 30000, 'capped, not 32000');
+  assert.equal(reconnectDelayMs(50), 30000, 'stays capped');
+});
+
+test('reconnectDelayMs honours custom bounds and rejects a bad attempt', () => {
+  assert.equal(reconnectDelayMs(0, { baseMs: 250, maxMs: 1000 }), 250);
+  assert.equal(reconnectDelayMs(3, { baseMs: 250, maxMs: 1000 }), 1000);
+  for (const bad of [-1, 1.5, Number.NaN, '2', null]) {
+    assert.throws(
+      () => reconnectDelayMs(bad),
+      /attempt must be a non-negative integer/,
+      String(bad),
+    );
+  }
+});
+
+test('the store can be CLEARED, so a reconnect cannot leave phantom liquidity', () => {
+  // While disconnected the scanner misses cancellations. A level pulled during the gap
+  // would otherwise survive and be read as the best ask — a price nobody is offering,
+  // which UNDERSTATES cost and manufactures edge.
+  const store = createBookStore();
+  store.applyMessage(bookMsg(YES, { asks: [{ price: '0.30', size: '100' }], ts: 1000 }));
+  store.applyMessage(bookMsg(NO, { asks: [{ price: '0.40', size: '100' }], ts: 1000 }));
+  assert.equal(store.size, 2);
+
+  store.clear();
+
+  assert.equal(store.size, 0);
+  assert.equal(store.top(YES), null, 'the stale ask is gone, not merely hidden');
+  assert.deepEqual(store.tokens(), []);
+  // and a set over those tokens is skipped rather than priced off the phantom book
+  assert.deepEqual(
+    scanSets({ sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]), store, cfg: CFG, nowMs: 1100 }),
+    [],
+  );
+});
+
+test('a cleared store rebuilds cleanly from the next snapshot', () => {
+  const store = createBookStore();
+  store.applyMessage(bookMsg(YES, { asks: [{ price: '0.30', size: '100' }], ts: 1000 }));
+  store.clear();
+  store.applyMessage(bookMsg(YES, { asks: [{ price: '0.55', size: '10' }], ts: 2000 }));
+  closeTo(store.top(YES).bestAsk, 0.55, 'only the post-reconnect state is present');
 });

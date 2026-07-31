@@ -28,7 +28,9 @@ import {
   parseFrame,
   persistOpportunity,
   scanSets,
+  reconnectDelayMs,
   setsForTokens,
+  tokenSetChanged,
   tokensForSets,
   tokensInMessage,
 } from '../lib/scanner_polymarket.mjs';
@@ -46,19 +48,53 @@ const db = openDb(cfg.db);
 
 const log = (...parts) => console.log(new Date().toISOString(), ...parts);
 
+const store = createBookStore();
+const policy = createPersistPolicy({ missSampleMs: cfg.missSampleMs });
+
+let sets = [];
+let index = new Map();
+let tokens = [];
+let scanned = 0;
+let evaluated = 0;
+let recorded = 0;
+let cleared = 0;
+let ws = null;
+let attempt = 0;
+let stopping = false;
+
+/**
+ * Rebuild the tradeable universe.
+ *
+ * Re-run periodically, not just at startup: markets are created and resolved
+ * continuously, so a scanner that discovers once measures a universe that only shrinks
+ * over a week-long run, and would silently miss every market created after boot.
+ *
+ * @returns {Promise<boolean>} whether the token set rotated
+ */
+async function rediscover() {
+  const rows = await discoverMarkets();
+  const grouped = groupIntoSets(rows, { withDrops: true });
+  const dropCounts = {};
+  for (const d of grouped.dropped) dropCounts[d.reason] = (dropCounts[d.reason] ?? 0) + 1;
+
+  const nextTokens = tokensForSets(grouped.sets);
+  const rotated = tokenSetChanged(tokens, nextTokens);
+
+  sets = grouped.sets;
+  index = indexSetsByToken(sets);
+  tokens = nextTokens;
+
+  log(
+    `discovered ${rows.length} rows -> ${sets.length} complete sets ` +
+      `(${tokens.length} tokens); dropped ${grouped.dropped.length}`,
+    JSON.stringify(dropCounts),
+    rotated ? '[ROTATED]' : '',
+  );
+  return rotated;
+}
+
 log('discovering markets…');
-const rows = await discoverMarkets();
-const { sets, dropped } = groupIntoSets(rows, { withDrops: true });
-
-const dropCounts = {};
-for (const d of dropped) dropCounts[d.reason] = (dropCounts[d.reason] ?? 0) + 1;
-
-const tokens = tokensForSets(sets);
-log(
-  `discovered ${rows.length} rows -> ${sets.length} complete sets ` +
-    `(${tokens.length} tokens); dropped ${dropped.length}`,
-  JSON.stringify(dropCounts),
-);
+await rediscover();
 
 if (once) {
   db.close();
@@ -69,14 +105,6 @@ if (sets.length === 0) {
   db.close();
   process.exit(0);
 }
-
-const store = createBookStore();
-const index = indexSetsByToken(sets);
-const policy = createPersistPolicy({ missSampleMs: cfg.missSampleMs });
-let scanned = 0;
-let evaluated = 0;
-let recorded = 0;
-let cleared = 0;
 
 /**
  * Price the touched sets and record what is worth recording.
@@ -121,52 +149,95 @@ function scanAndRecord(touchedSets) {
   }
 }
 
-const ws = new WebSocket(WS_URL);
+/**
+ * Open a socket and subscribe.
+ *
+ * Every connect starts from an EMPTY book store. While disconnected the scanner misses
+ * cancellations, so a level pulled during the gap would otherwise survive and be read as
+ * the best ask — a price nobody is offering, which understates cost. The venue re-sends
+ * full snapshots on subscribe, so discarding costs nothing.
+ */
+function connect() {
+  if (stopping) return;
+  store.clear();
+  ws = new WebSocket(WS_URL);
 
-ws.addEventListener('open', () => {
-  log(`connected; subscribing ${tokens.length} tokens`);
-  ws.send(JSON.stringify(buildSubscribe(tokens)));
-});
+  ws.addEventListener('open', () => {
+    attempt = 0;
+    log(`connected; subscribing ${tokens.length} tokens`);
+    ws.send(JSON.stringify(buildSubscribe(tokens)));
+  });
 
-ws.addEventListener('message', (ev) => {
-  const text = typeof ev.data === 'string' ? ev.data : String(ev.data);
-  const messages = parseFrame(text);
-  if (messages.length === 0) return;
+  ws.addEventListener('message', (ev) => {
+    const text = typeof ev.data === 'string' ? ev.data : String(ev.data);
+    const messages = parseFrame(text);
+    if (messages.length === 0) return;
 
-  // Rescan ONLY the sets this batch touched. Rescanning everything re-evaluates sets
-  // whose own books have not moved, which floods the table with stale-book skips.
-  const touchedTokens = new Set();
-  for (const msg of messages) {
-    store.applyMessage(msg);
-    for (const tokenId of tokensInMessage(msg)) touchedTokens.add(tokenId);
-  }
-  scanAndRecord(setsForTokens(index, touchedTokens));
-});
+    // Rescan ONLY the sets this batch touched. Rescanning everything re-evaluates sets
+    // whose own books have not moved, which floods the table with stale-book skips.
+    const touchedTokens = new Set();
+    for (const msg of messages) {
+      store.applyMessage(msg);
+      for (const tokenId of tokensInMessage(msg)) touchedTokens.add(tokenId);
+    }
+    scanAndRecord(setsForTokens(index, touchedTokens));
+  });
 
-ws.addEventListener('error', (err) => log('ws error:', err?.message ?? String(err)));
-ws.addEventListener('close', (ev) => log('ws closed', ev?.code ?? '', ev?.reason ?? ''));
+  ws.addEventListener('error', (err) => log('ws error:', err?.message ?? String(err)));
+
+  ws.addEventListener('close', (ev) => {
+    if (stopping) return;
+    // A dropped socket must never leave the process alive-but-idle: the timers below
+    // would keep it looking healthy while it recorded nothing, and a week of that
+    // produces a partial dataset indistinguishable from a complete one.
+    const delay = reconnectDelayMs(attempt);
+    attempt += 1;
+    log(`ws closed (${ev?.code ?? '?'}); reconnecting in ${delay}ms (attempt ${attempt})`);
+    setTimeout(connect, delay);
+  });
+}
+
+connect();
 
 // The venue answers PING with PONG; without it the connection is dropped.
 const keepalive = setInterval(() => {
-  if (ws.readyState === WebSocket.OPEN) ws.send('PING');
+  if (ws?.readyState === WebSocket.OPEN) ws.send('PING');
 }, 10_000);
 
 const report = setInterval(() => {
   log(
     `scans=${scanned} evaluated=${evaluated} recorded=${recorded} ` +
-      `clears=${cleared} tokens=${store.size}`,
+      `clears=${cleared} tokens=${store.size} connected=${ws?.readyState === WebSocket.OPEN}`,
   );
 }, 60_000);
 
+const rediscovery = setInterval(async () => {
+  try {
+    const rotated = await rediscover();
+    // A resubscribe on an open socket is reported not to take effect, so a rotation is
+    // answered by tearing the connection down. Closing triggers the reconnect path,
+    // which resubscribes the new token set against a cleared store.
+    if (rotated && ws?.readyState === WebSocket.OPEN) {
+      log('token set rotated; forcing reconnect so the new tokens actually stream');
+      ws.close();
+    }
+  } catch (err) {
+    // Keep measuring on the existing universe rather than dying at a transient 5xx.
+    log('rediscovery failed:', err.message);
+  }
+}, cfg.rediscoverMs);
+
 function shutdown(reason) {
+  stopping = true;
   log(
     `shutting down (${reason}); scans=${scanned} evaluated=${evaluated} ` +
       `recorded=${recorded} clears=${cleared}`,
   );
   clearInterval(keepalive);
   clearInterval(report);
+  clearInterval(rediscovery);
   try {
-    ws.close();
+    ws?.close();
   } catch {
     // already closing
   }
@@ -176,4 +247,7 @@ function shutdown(reason) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('unhandledRejection', (err) => {
+  log('unhandled rejection:', err?.message ?? String(err));
+});
 if (runSeconds > 0) setTimeout(() => shutdown(`--seconds ${runSeconds}`), runSeconds * 1000);

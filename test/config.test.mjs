@@ -168,6 +168,7 @@ test('DEFAULTS is exported and agrees with what loadConfig({}) produces', () => 
   assert.equal(DEFAULTS.GPA_MAX_SET_SIZE_USD, 250);
   assert.equal(DEFAULTS.GPA_DEPTH_SAFETY_FACTOR, 0.5);
   assert.equal(DEFAULTS.GPA_MISS_SAMPLE_MS, 300000);
+  assert.equal(DEFAULTS.GPA_REDISCOVER_MS, 900000);
   assert.equal(DEFAULTS.GPA_KEEP_OPP_DAYS, 90);
   assert.equal(DEFAULTS.GPA_DB_BUSY_TIMEOUT_MS, 5000);
   assert.equal(DEFAULTS.GPA_BIND, '127.0.0.1');
@@ -290,6 +291,15 @@ test('GPA_MISS_SAMPLE_MS bounds how often a NON-clearing set is re-recorded', ()
   assert.equal(loadConfig({ GPA_MISS_SAMPLE_MS: '60000' }).missSampleMs, 60000);
   assert.throws(() => loadConfig({ GPA_MISS_SAMPLE_MS: '-1' }), /GPA_MISS_SAMPLE_MS must be >= 0/);
   assert.throws(() => loadConfig({ GPA_MISS_SAMPLE_MS: 'soon' }), /GPA_MISS_SAMPLE_MS must be an integer/);
+});
+
+test('GPA_REDISCOVER_MS is floored well above zero', () => {
+  // Each pass is a full paginated crawl; a tiny interval would hammer the venue and
+  // starve the scan loop.
+  assert.equal(loadConfig({}).rediscoverMs, 900000);
+  assert.equal(loadConfig({ GPA_REDISCOVER_MS: '60000' }).rediscoverMs, 60000);
+  assert.throws(() => loadConfig({ GPA_REDISCOVER_MS: '59999' }), /GPA_REDISCOVER_MS must be >= 60000/);
+  assert.throws(() => loadConfig({ GPA_REDISCOVER_MS: '0' }), /GPA_REDISCOVER_MS must be >= 60000/);
 });
 
 test('GPA_KEEP_OPP_DAYS accepts 0 as "retention disabled" but rejects negatives', () => {
