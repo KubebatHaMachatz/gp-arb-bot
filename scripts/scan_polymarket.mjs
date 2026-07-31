@@ -17,7 +17,7 @@
  */
 
 import { loadConfig } from '../lib/config.mjs';
-import { openDb } from '../lib/db.mjs';
+import { openDb, persistMarkets } from '../lib/db.mjs';
 import { discoverMarkets, groupIntoSets } from '../lib/adapters/polymarket.mjs';
 import {
   WS_URL,
@@ -83,6 +83,15 @@ async function rediscover() {
   sets = grouped.sets;
   index = indexSetsByToken(sets);
   tokens = nextTokens;
+
+  // Persist the market metadata too. Without it the per-category readout collapses to
+  // "(unknown)" and the fee-free bucket -- the one place taker arbitrage still works
+  // cleanly -- becomes invisible exactly when it matters.
+  try {
+    persistMarkets(db, rows, Date.now());
+  } catch (err) {
+    log('market persist error:', err.message);
+  }
 
   log(
     `discovered ${rows.length} rows -> ${sets.length} complete sets ` +

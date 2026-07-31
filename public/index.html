@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gp-arb-bot — Phase 1 readout</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2b2f39;
+    --ink: #e6e8ec; --dim: #8b93a3; --good: #4ea373; --bad: #c96a5c; --warn: #c9a45c;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; background: var(--bg); color: var(--ink); font-size: 13px; }
+  h1 { font-size: 15px; margin: 0 0 .25rem; font-weight: 600; }
+  .sub { color: var(--dim); margin-bottom: 1.25rem; }
+  .windows { display: flex; gap: .4rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
+  .windows button {
+    background: var(--panel); color: var(--dim); border: 1px solid var(--line);
+    padding: .3rem .7rem; border-radius: 4px; cursor: pointer; font: inherit;
+  }
+  .windows button[aria-pressed="true"] { color: var(--ink); border-color: var(--dim); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .9rem 1rem; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 .7rem; font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: .75rem; }
+  .tile .v { font-size: 20px; }
+  .tile .k { color: var(--dim); font-size: 11px; margin-top: .15rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: right; padding: .25rem .35rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; }
+  tbody tr:last-child td { border-bottom: none; }
+  .bar { display: inline-block; height: 9px; background: var(--dim); border-radius: 2px; vertical-align: middle; }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .scroll { overflow-x: auto; }
+  .note { color: var(--dim); margin-top: .6rem; line-height: 1.5; }
+  code { color: var(--ink); }
+</style>
+</head>
+<body>
+<h1>gp-arb-bot — Phase 1 readout</h1>
+<div class="sub" id="sub">loading…</div>
+
+<div class="windows" id="windows"></div>
+
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Headline</h2>
+    <div class="tiles" id="tiles"></div>
+    <div class="note" id="gate-note"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Post-fee edge distribution</h2>
+    <div class="scroll"><table id="dist"></table></div>
+    <div class="note">Priced sets only. Skipped sets make no edge claim, so binning them would invent data.</div>
+  </div>
+
+  <div class="panel">
+    <h2>By category</h2>
+    <div class="scroll"><table id="cats"></table></div>
+    <div class="note">The fee-free bucket is listed apart — it is the one place taker arbitrage still works cleanly.</div>
+  </div>
+
+  <div class="panel">
+    <h2>What limited the size</h2>
+    <div class="scroll"><table id="cap"></table></div>
+    <div class="note">A thin book means wait. A bound notional cap means add capital. The capacity number alone cannot tell them apart.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Activity by hour (UTC)</h2>
+    <div class="scroll"><table id="density"></table></div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Most recent clearing sets</h2>
+    <div class="scroll"><table id="clears"></table></div>
+    <div class="note" id="clears-note"></div>
+  </div>
+</div>
+
+<script>
+const WINDOWS = ['1h', '24h', '7d', 'all'];
+let current = '24h';
+
+const pct = (x) => (x * 100).toFixed(1) + '%';
+const cents = (x) => (x === null || x === undefined ? '—' : (x * 100).toFixed(2) + 'c');
+const usd = (x) => (x === null || x === undefined ? '—' : '$' + Number(x).toLocaleString(undefined, { maximumFractionDigits: 0 }));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function get(path) {
+  const res = await fetch(path + '?window=' + encodeURIComponent(current));
+  if (!res.ok) throw new Error(path + ' -> HTTP ' + res.status);
+  return res.json();
+}
+
+function table(el, headers, rows) {
+  el.innerHTML =
+    '<thead><tr>' + headers.map((h) => '<th>' + esc(h) + '</th>').join('') + '</tr></thead>' +
+    '<tbody>' + (rows.length
+      ? rows.map((r) => '<tr>' + r.map((c) => '<td>' + c + '</td>').join('') + '</tr>').join('')
+      : '<tr><td colspan="' + headers.length + '" style="color:var(--dim)">no data in this window</td></tr>') +
+    '</tbody>';
+}
+
+function renderWindows() {
+  document.getElementById('windows').innerHTML = WINDOWS
+    .map((w) => '<button data-w="' + w + '" aria-pressed="' + (w === current) + '">' + w + '</button>')
+    .join('');
+  for (const b of document.querySelectorAll('#windows button')) {
+    b.onclick = () => { current = b.dataset.w; renderWindows(); refresh(); };
+  }
+}
+
+async function refresh() {
+  try {
+    const [s, dist, cats, cap, den, rc] = await Promise.all([
+      get('/api/summary'), get('/api/edge-distribution'), get('/api/categories'),
+      get('/api/capacity'), get('/api/density'), get('/api/recent-clears'),
+    ]);
+
+    document.getElementById('sub').textContent =
+      'clear floor ' + cents(s.minNetEdge) + ' net per complete set · window ' + s.window +
+      ' · updated ' + new Date(s.generatedAtMs).toLocaleTimeString();
+
+    document.getElementById('tiles').innerHTML = [
+      ['<span class="' + (s.clears > 0 ? 'good' : '') + '">' + s.clears + '</span>', 'clearing sets'],
+      [s.priced.toLocaleString(), 'priced'],
+      ['<span class="' + (s.skipRate > 0.5 ? 'warn' : '') + '">' + pct(s.skipRate) + '</span>', 'gated stale'],
+      [pct(s.clearRate), 'clear rate (of priced)'],
+      [cents(s.bestNetEdge), 'best net edge'],
+      [usd(s.clearingCapacityUsd), 'clearing capacity'],
+    ].map(([v, k]) => '<div class="tile"><div class="v">' + v + '</div><div class="k">' + k + '</div></div>').join('');
+
+    document.getElementById('gate-note').innerHTML = s.clears === 0
+      ? 'No set cleared the floor in this window. <code>best net edge</code> is how close the market came — that number, not the count, is the one to watch while the sample is small.'
+      : 'Clearing capacity is the summed depth-aware size of sets that beat the floor — an upper bound, since it assumes displayed depth is fillable.';
+
+    const maxCount = Math.max(1, ...dist.buckets.map((b) => b.count));
+    table(document.getElementById('dist'), ['bucket', 'count', ''], dist.buckets.map((b) => [
+      esc(b.label), b.count,
+      '<span class="bar" style="width:' + Math.round((b.count / maxCount) * 90) + 'px"></span>',
+    ]));
+
+    table(document.getElementById('cats'), ['category', 'priced', 'clears', 'best'], cats.categories.map((c) => [
+      esc(c.category) + (c.feeFree ? ' <span class="good">(fee-free)</span>' : ''),
+      c.priced, c.clears, cents(c.bestNetEdge),
+    ]));
+
+    table(document.getElementById('cap'), ['bound by', 'sets'], [
+      ['thin book (a leg)', cap.book],
+      ['notional cap', cap.notional],
+      ['not sized (gated)', cap.unsized],
+      ['median capacity', usd(cap.medianCapacityUsd)],
+    ]);
+
+    table(document.getElementById('density'), ['hour (UTC)', 'priced', 'gated', 'clears'], den.hours.map((h) => [
+      new Date(h.hourMs).toISOString().slice(0, 13).replace('T', ' '),
+      h.priced, h.skipped, h.clears > 0 ? '<span class="good">' + h.clears + '</span>' : '0',
+    ]));
+
+    table(document.getElementById('clears'), ['when', 'kind', 'event', 'legs', 'net', 'capacity', 'bound by', 'book age'],
+      rc.clears.map((c) => [
+        new Date(c.ts).toISOString().slice(11, 19),
+        esc(c.kind), '<code>' + esc(String(c.eventKey).slice(0, 22)) + '…</code>', c.legCount,
+        '<span class="good">' + cents(c.netEdge) + '</span>', usd(c.capacityUsd),
+        esc(String(c.bindingLeg)), c.bookAgeMs + 'ms',
+      ]));
+    document.getElementById('clears-note').textContent =
+      rc.clears.length === 0 ? 'Nothing has cleared the floor in this window.' : '';
+  } catch (err) {
+    document.getElementById('sub').innerHTML = '<span class="bad">' + esc(err.message) + '</span>';
+  }
+}
+
+renderWindows();
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
