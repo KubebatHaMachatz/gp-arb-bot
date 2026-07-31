@@ -72,8 +72,14 @@ CREATE TABLE IF NOT EXISTS opportunities (
   net_edge        REAL    NOT NULL,  -- 1 - gross_cost - total_fee
   capacity_shares REAL,              -- min(shares) across legs, x the safety factor
   capacity_usd    REAL,              -- capacity_shares x (gross_cost + total_fee)
+  -- WHICH constraint bound the size: a leg index (as text) or the literal 'notional'.
+  -- Kept because the two call for opposite responses -- a thin book means wait, a bound
+  -- notional cap means add capital -- and the capacity number alone cannot distinguish
+  -- them. TEXT so a leg index and 'notional' share one column honestly.
+  binding_leg     TEXT,
   book_age_ms     INTEGER,           -- oldest leg's book age at detection
-  detected_ms     INTEGER            -- wall-clock cost of the detection pass
+  detected_ms     INTEGER,           -- wall-clock cost of the detection pass
+  skip_reason     TEXT               -- NULL when acted on; e.g. 'stale_book' when gated
 );
 
 CREATE INDEX IF NOT EXISTS idx_opp_event ON opportunities (venue, event_key, ts);

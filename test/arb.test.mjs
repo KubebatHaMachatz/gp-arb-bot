@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { loadConfig } from '../lib/config.mjs';
+import { openDb } from '../lib/db.mjs';
 import { venueTakerFeeFn } from '../lib/fees.mjs';
 import {
   KIND_BINARY,
@@ -504,6 +506,83 @@ test('detectOpportunity requires a usable nowMs and cfg', () => {
   };
   assert.throws(() => detectOpportunity({ ...base, cfg: CFG, nowMs: Number.NaN }), /nowMs must be a finite number/);
   assert.throws(() => detectOpportunity({ ...base, cfg: null, nowMs: 0 }), /cfg must be an object/);
+});
+
+test('detectOpportunity REJECTS a cfg without a usable bookStaleMs — the gate fails CLOSED', () => {
+  // Validated separately from every other cfg field because it is the only one that
+  // would fail OPEN: `age > undefined` is a NaN comparison and therefore false, so a
+  // partial or misspelled cfg would silently disable the freshness gate and publish a
+  // tradeable claim on an arbitrarily stale book. minNetEdge, depthSafetyFactor and
+  // maxSetSizeUsd all already throw on absence; this one did not.
+  const base = {
+    venue: 'polymarket',
+    eventKey: 'e',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 0 },
+      { price: 0.45, sizeShares: 600, bookTs: 0 },
+    ],
+    feeFn: politics(),
+    nowMs: 999_999, // absurdly stale relative to any sane gate
+  };
+  for (const bad of [undefined, null, Number.NaN, 0, -1, '750']) {
+    assert.throws(
+      () => detectOpportunity({ ...base, cfg: { ...CFG, bookStaleMs: bad } }),
+      /cfg\.bookStaleMs must be a finite number >= 1/,
+      `expected bookStaleMs ${String(bad)} to be rejected`,
+    );
+  }
+  // A cfg missing the key entirely is the realistic version of the same mistake.
+  const withoutGate = { ...CFG };
+  delete withoutGate.bookStaleMs;
+  assert.throws(
+    () => detectOpportunity({ ...base, cfg: withoutGate }),
+    /cfg\.bookStaleMs must be a finite number >= 1/,
+  );
+});
+
+test('a loadConfig-produced cfg satisfies detectOpportunity without adaptation', () => {
+  // Guards the seam between the two modules: if config.mjs renamed a knob, or arb.mjs
+  // started reading one config does not produce, this fails rather than surfacing as a
+  // runtime error in a live scanner.
+  const cfg = loadConfig({});
+  const out = detectOpportunity({
+    venue: 'polymarket',
+    eventKey: 'evt-cfg',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 1_000_000 },
+      { price: 0.45, sizeShares: 600, bookTs: 1_000_000 },
+    ],
+    feeFn: politics(),
+    cfg,
+    nowMs: 1_000_100,
+  });
+  assert.equal(out.skipped, null);
+  assert.equal(out.clears, true);
+  // defaults: depthSafetyFactor 0.5 -> min(400,600)*0.5 = 200 shares
+  closeTo(out.capacityShares, 200, 'capacityShares from real defaults');
+});
+
+test('the opportunities table has a column for every field detectOpportunity produces', () => {
+  // bindingLeg is only useful if it survives persistence: a thin book means wait, a
+  // bound notional cap means add capital, and the capacity number alone cannot tell
+  // them apart. Round 1 of review caught it having nowhere to be written.
+  const db = openDb(':memory:');
+  try {
+    const columns = new Set(
+      db.prepare('PRAGMA table_info(opportunities)').all().map((r) => r.name),
+    );
+    for (const col of [
+      'venue', 'event_key', 'ts', 'kind', 'leg_count', 'gross_cost', 'total_fee',
+      'net_edge', 'capacity_shares', 'capacity_usd', 'binding_leg', 'book_age_ms',
+      'skip_reason',
+    ]) {
+      assert.ok(columns.has(col), `opportunities is missing the ${col} column`);
+    }
+  } finally {
+    db.close();
+  }
 });
 
 test('detectOpportunity requires at least two legs — a single leg is not a set', () => {
