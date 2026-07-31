@@ -227,6 +227,45 @@ test('limitlessTakerFee interpolates linearly between SELL table points', () => 
   closeTo(limitlessTakerFee(0.25, 'SELL'), 0.0030375, 'sell @0.25');
 });
 
+test('limitlessTakerFee interpolates correctly OFF the midpoint too', () => {
+  // Every interpolation case above sits at t=0.5, and a midpoint is blind to a whole
+  // class of index bug: pairing x from one table point with y from the other gives the
+  // SAME answer at t=0.5 (0.0276 either way) and a different one anywhere else. These
+  // asymmetric cases are what actually pin the endpoint pairing down.
+  //
+  // BUY p=0.51, between 0.50 (0.0300) and 0.55 (0.0252), t = 0.01/0.05 = 0.2:
+  //   rate = 0.0300 + 0.2 * (0.0252 - 0.0300) = 0.0300 - 0.00096 = 0.02904
+  //   fee  = 0.02904 * 0.51 = 0.0148104          (mispaired would give 0.02616 -> 0.0133416)
+  closeTo(limitlessTakerFee(0.51, 'BUY'), 0.0148104, 'buy @0.51');
+  //
+  // SELL p=0.22, between 0.20 (0.0111) and 0.30 (0.0132), t = 0.02/0.10 = 0.2:
+  //   rate = 0.0111 + 0.2 * (0.0132 - 0.0111) = 0.0111 + 0.00042 = 0.01152
+  //   fee  = 0.01152 * 0.22 = 0.0025344          (mispaired would give 0.01278 -> 0.0028116)
+  closeTo(limitlessTakerFee(0.22, 'SELL'), 0.0025344, 'sell @0.22');
+  //
+  // And near the far end of the BUY table, t = (0.97-0.95)/(0.99-0.95) = 0.5 would be
+  // symmetric again, so use t = 0.25: p = 0.96
+  //   rate = 0.0053 + 0.25 * (0.0042 - 0.0053) = 0.0053 - 0.000275 = 0.005025
+  //   fee  = 0.005025 * 0.96 = 0.004824
+  closeTo(limitlessTakerFee(0.96, 'BUY'), 0.004824, 'buy @0.96');
+});
+
+test('limitlessTakerFee is monotone between adjacent BUY table points', () => {
+  // A sampled sweep across one interval: the rate must fall steadily from 0.0300 at
+  // 0.50 to 0.0252 at 0.55, so the per-notional rate never jumps or reverses inside a
+  // segment. Compares consecutive samples to each other, not to the function's own
+  // output as an oracle — each endpoint has its exact hand-computed test above.
+  const rates = [];
+  for (let p = 0.5; p <= 0.5501; p += 0.005) {
+    rates.push(limitlessTakerFee(p, 'BUY') / p);
+  }
+  for (let i = 1; i < rates.length; i += 1) {
+    assert.ok(rates[i] <= rates[i - 1] + EPS, `rate must not rise inside the segment at i=${i}`);
+  }
+  closeTo(rates[0], 0.03, 'segment start rate');
+  closeTo(rates[rates.length - 1], 0.0252, 'segment end rate');
+});
+
 test('limitlessTakerFee clamps below the first and above the last table point', () => {
   // Below 0.01 the BUY rate stays 0.0300: 0.0300 * 0.005 = 0.00015
   closeTo(limitlessTakerFee(0.005, 'BUY'), 0.00015, 'buy @0.005');
