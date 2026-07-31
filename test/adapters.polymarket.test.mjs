@@ -9,6 +9,7 @@ import {
   discoverMarkets,
   feeCategoryFor,
   feeFnFor,
+  normalizeEvent,
   groupIntoSets,
   normalizeMarket,
 } from '../lib/adapters/polymarket.mjs';
@@ -111,6 +112,14 @@ const REAL_BOOK = {
   ],
 };
 
+/** The event wrapper Gamma actually returns, nesting every member market. */
+const REAL_EVENT = {
+  id: '24383',
+  negRisk: true,
+  negRiskMarketID: NEG_RISK_ID,
+  markets: REAL_NEG_RISK,
+};
+
 // ── identity and the fee-type table ─────────────────────────────────────────
 
 test('NAME matches the venue column value used everywhere else', () => {
@@ -157,6 +166,16 @@ test('feeCategoryFor does NOT treat a missing feeType as free when fees are ENAB
   // The dangerous shape: fees are on, but we cannot tell at what rate. Must not fall
   // through to the zero-rate branch.
   assert.equal(feeCategoryFor({ feeType: null, feesEnabled: true }), null);
+});
+
+test('feeCategoryFor FAILS CLOSED when feesEnabled is absent entirely', () => {
+  // Falsiness would read a missing field as "free" and price the whole universe at zero
+  // fees. Only an explicit `false` means exempt.
+  assert.equal(feeCategoryFor({ feeType: null }), null);
+  assert.equal(feeCategoryFor({}), null);
+  assert.equal(feeCategoryFor({ feeType: undefined, feesEnabled: undefined }), null);
+  // explicit false still resolves to the fee-free category
+  assert.equal(feeCategoryFor({ feeType: null, feesEnabled: false }), 'geopolitics');
 });
 
 test('feeCategoryFor does not resolve feeTypes through the prototype chain', () => {
@@ -280,7 +299,7 @@ test('groupIntoSets builds a binary set from a Yes/No pair', () => {
 });
 
 test('groupIntoSets builds a neg-risk set from the YES leg of every group member', () => {
-  const rows = REAL_NEG_RISK.flatMap(normalizeMarket);
+  const rows = REAL_NEG_RISK.flatMap((m) => normalizeMarket(m, { negRiskGroupSize: 2 }));
   const sets = groupIntoSets(rows);
   const neg = sets.filter((s) => s.kind === KIND_NEG_RISK);
   assert.equal(neg.length, 1);
@@ -297,7 +316,7 @@ test('groupIntoSets builds a neg-risk set from the YES leg of every group member
 test('one neg-risk market yields BOTH its own binary set and membership of the group set', () => {
   // Both are genuine complete sets with different unwind mechanics (CTF merge vs
   // NegRiskAdapter convert), so neither may shadow the other.
-  const rows = REAL_NEG_RISK.flatMap(normalizeMarket);
+  const rows = REAL_NEG_RISK.flatMap((m) => normalizeMarket(m, { negRiskGroupSize: 2 }));
   const sets = groupIntoSets(rows);
   assert.equal(sets.filter((s) => s.kind === KIND_BINARY).length, 2);
   assert.equal(sets.filter((s) => s.kind === KIND_NEG_RISK).length, 1);
@@ -336,7 +355,7 @@ test('groupIntoSets DROPS a COMPLETE neg-risk group whose legs have no known fee
   // tradeable, and only the unknown rate makes it unpriceable. Pricing it would compare
   // a fee-free cost against a $1 payout on markets the venue does charge for.
   const unmapped = REAL_NEG_RISK.map((m) => ({ ...m, feeType: 'general_fees' }));
-  const { sets, dropped } = groupIntoSets(unmapped.flatMap(normalizeMarket), { withDrops: true });
+  const { sets, dropped } = groupIntoSets(unmapped.flatMap((m) => normalizeMarket(m, { negRiskGroupSize: 2 })), { withDrops: true });
   assert.equal(sets.length, 0);
   const negDrops = dropped.filter((d) => d.kind === KIND_NEG_RISK);
   assert.equal(negDrops.length, 1);
@@ -348,13 +367,65 @@ test('a fee-EXEMPT neg-risk group is priceable, not dropped', () => {
   // The fee-free bucket is where taker arbitrage still works cleanly, so it must not be
   // confused with the unmapped bucket. Both have no rate in `feeType`; only one is free.
   const exempt = REAL_NEG_RISK.map((m) => ({ ...m, feeType: null, feesEnabled: false }));
-  const sets = groupIntoSets(exempt.flatMap(normalizeMarket));
+  const sets = groupIntoSets(exempt.flatMap((m) => normalizeMarket(m, { negRiskGroupSize: 2 })));
   const neg = sets.filter((s) => s.kind === KIND_NEG_RISK);
   assert.equal(neg.length, 1);
   assert.equal(neg[0].legs[0].category, 'geopolitics');
   assert.equal(neg[0].legs[0].feeRate, 0);
   // and it prices at exactly zero fee through the shared engine
   assert.equal(feeFnFor(neg[0].legs[0])(0.5), 0);
+});
+
+test('groupIntoSets DROPS a neg-risk group short of its DECLARED size', () => {
+  // The regression this test exists for: "at least 2 legs" is not a completeness check.
+  // Two legs of a 51-outcome race cost about 0.39 and would be emitted as a complete
+  // set showing a ~60c risk-free edge on something that can never be redeemed.
+  const short = REAL_NEG_RISK.flatMap((m) => normalizeMarket(m, { negRiskGroupSize: 51 }));
+  const { sets, dropped } = groupIntoSets(short, { withDrops: true });
+  assert.equal(sets.filter((x) => x.kind === KIND_NEG_RISK).length, 0);
+  const neg = dropped.find((d) => d.kind === KIND_NEG_RISK);
+  assert.equal(neg.reason, 'incomplete_neg_risk');
+  assert.equal(neg.have, 2);
+  assert.equal(neg.declared, 51);
+});
+
+test('groupIntoSets DROPS a neg-risk group whose size the venue never declared', () => {
+  // Unknown size is treated as incomplete, so the safe answer is the default rather than
+  // something a caller has to remember to opt into.
+  const unknown = REAL_NEG_RISK.flatMap((m) => normalizeMarket(m));
+  assert.equal(groupIntoSets(unknown).filter((x) => x.kind === KIND_NEG_RISK).length, 0);
+});
+
+test('normalizeEvent stamps the declared group size from the event itself', () => {
+  const rows = normalizeEvent(REAL_EVENT);
+  assert.equal(rows.length, 4);
+  assert.equal(rows[0].negRiskGroupSize, 2);
+  // and the resulting set is complete
+  assert.equal(groupIntoSets(rows).filter((x) => x.kind === KIND_NEG_RISK).length, 1);
+});
+
+test('normalizeEvent counts group size BEFORE filtering untradeable members', () => {
+  // A group with one suspended outcome is genuinely incomplete — you cannot buy every
+  // outcome — so it must not quietly shrink to fit the members that happen to be open.
+  const withSuspended = {
+    ...REAL_EVENT,
+    markets: [REAL_NEG_RISK[0], { ...REAL_NEG_RISK[1], acceptingOrders: false }],
+  };
+  const rows = normalizeEvent(withSuspended);
+  assert.equal(rows.length, 2, 'only the tradeable market normalizes');
+  assert.equal(rows[0].negRiskGroupSize, 2, 'but the declared size still says 2');
+  assert.equal(groupIntoSets(rows).filter((x) => x.kind === KIND_NEG_RISK).length, 0);
+});
+
+test('normalizeEvent leaves group size null for a non-neg-risk event', () => {
+  const rows = normalizeEvent({ id: '1', negRisk: false, markets: [REAL_BINARY] });
+  assert.equal(rows[0].negRiskGroupSize, null);
+});
+
+test('normalizeEvent tolerates a malformed or market-less event', () => {
+  for (const bad of [null, undefined, 'x', {}, { markets: 'nope' }]) {
+    assert.deepEqual(normalizeEvent(bad), [], String(bad));
+  }
 });
 
 test('groupIntoSets reports why each dropped group was dropped', () => {
@@ -391,6 +462,39 @@ test('bookTopFromBook takes the LAST level on both sides — the best price', ()
     '54533043819946592547517511176940999955633860128497669742211153063842200957669',
   );
   assert.equal(top.ts, 1785495025805);
+});
+
+test('bookTopFromBook is INDEPENDENT of level ordering', () => {
+  // The live book happens to arrive bids-ascending / asks-descending, but Polymarket
+  // documents no such guarantee, so top-of-book is found by scanning for max(bid) and
+  // min(ask) rather than by position. Reversed and shuffled orderings must agree.
+  const expected = { bid: 0.193, ask: 0.194, bidSize: 419.95, askSize: 34612.41 };
+  const reversed = bookTopFromBook({
+    ...REAL_BOOK,
+    bids: [...REAL_BOOK.bids].reverse(),
+    asks: [...REAL_BOOK.asks].reverse(),
+  });
+  closeTo(reversed.bestBid, expected.bid, 'reversed bestBid');
+  closeTo(reversed.bestAsk, expected.ask, 'reversed bestAsk');
+  closeTo(reversed.bidSize, expected.bidSize, 'reversed bidSize');
+  closeTo(reversed.askSize, expected.askSize, 'reversed askSize');
+
+  const shuffled = bookTopFromBook({
+    ...REAL_BOOK,
+    bids: [REAL_BOOK.bids[1], REAL_BOOK.bids[2], REAL_BOOK.bids[0]],
+    asks: [REAL_BOOK.asks[2], REAL_BOOK.asks[0], REAL_BOOK.asks[1]],
+  });
+  closeTo(shuffled.bestBid, expected.bid, 'shuffled bestBid');
+  closeTo(shuffled.bestAsk, expected.ask, 'shuffled bestAsk');
+});
+
+test('bookTopFromBook skips an unusable level without discarding the rest of the side', () => {
+  const top = bookTopFromBook({
+    ...REAL_BOOK,
+    bids: [{ price: 'abc', size: '1' }, { price: '0.193', size: '419.95' }],
+  });
+  closeTo(top.bestBid, 0.193, 'good level still found');
+  closeTo(top.bidSize, 419.95, 'and its size');
 });
 
 test('bookTopFromBook never returns a crossed or inverted top from real ordering', () => {
@@ -454,8 +558,11 @@ test('feeFnFor surfaces the fee engine throw for an unmapped category, never a z
 
 // ── discoverMarkets ─────────────────────────────────────────────────────────
 
-test('discoverMarkets normalizes a paged Gamma response using an injected fetch', async () => {
-  const pages = [[REAL_NEG_RISK[0], REAL_NEG_RISK[1]], []];
+test('discoverMarkets pages over EVENTS, not markets, using an injected fetch', async () => {
+  // Reading events is what makes a neg-risk group arrive whole: paging over /markets can
+  // split a group across a page boundary, and a partial group priced as complete shows a
+  // huge edge on a set that can never be redeemed.
+  const pages = [[REAL_EVENT], []];
   const urls = [];
   const fetchImpl = async (url) => {
     urls.push(url);
@@ -463,16 +570,19 @@ test('discoverMarkets normalizes a paged Gamma response using an injected fetch'
   };
   const rows = await discoverMarkets({ fetchImpl, pageSize: 2, maxPages: 5 });
   assert.equal(rows.length, 4, 'two markets x two tokens');
-  assert.ok(urls[0].startsWith('https://gamma-api.polymarket.com/markets?'), urls[0]);
+  assert.ok(urls[0].startsWith('https://gamma-api.polymarket.com/events?'), urls[0]);
   assert.ok(urls[0].includes('closed=false'), urls[0]);
   assert.equal(urls.length, 2, 'stops on the first empty page');
+  // and the rows it produced form a COMPLETE neg-risk set
+  const sets = groupIntoSets(rows);
+  assert.equal(sets.filter((x) => x.kind === KIND_NEG_RISK).length, 1);
 });
 
 test('discoverMarkets stops at maxPages instead of paging forever', async () => {
   let calls = 0;
   const fetchImpl = async () => {
     calls += 1;
-    return { ok: true, status: 200, json: async () => [REAL_NEG_RISK[0]] };
+    return { ok: true, status: 200, json: async () => [REAL_EVENT] };
   };
   await discoverMarkets({ fetchImpl, pageSize: 1, maxPages: 3 });
   assert.equal(calls, 3);
@@ -490,7 +600,7 @@ test('discoverMarkets throws on a non-OK response instead of returning a short l
 
 test('discoverMarkets throws when the payload is not the array the API documents', async () => {
   const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ error: 'nope' }) });
-  await assert.rejects(() => discoverMarkets({ fetchImpl }), /expected an array of markets/);
+  await assert.rejects(() => discoverMarkets({ fetchImpl }), /expected an array of events/);
 });
 
 test('discoverMarkets requires an injectable fetch so tests never hit the network', async () => {

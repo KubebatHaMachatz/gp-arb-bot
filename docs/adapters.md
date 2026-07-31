@@ -209,7 +209,7 @@ published schedule, so its rate is genuinely unknown. `feeCategoryFor` returns `
 `groupIntoSets` **drops** any set containing such a leg, counted as `unmapped_fee_type` —
 rather than guessing 0.05, which would understate a 0.07 market and manufacture edge.
 
-### ✅ Order book — the best price is LAST on BOTH sides
+### ✅ Order book — level ordering is UNDOCUMENTED, so do not read by position
 
 `GET https://clob.polymarket.com/book?token_id=` — public, no auth. Live response:
 **`bids` ascend and `asks` descend**, so index 0 is the *worst* price on each side
@@ -218,8 +218,18 @@ Gamma's independently reported `bestBid: 0.193` / `bestAsk: 0.194` for the same 
 the same moment. Prices and sizes are **strings**; `timestamp` is a string of epoch ms.
 Sizes are **share counts**.
 
-Reading index 0 would misprice every set catastrophically, so `bookTopFromBook` takes the
-last level and a test pins the convention against the captured real response.
+Reading index 0 would misprice every set catastrophically. But the venue documents no
+ordering guarantee at all, so `bookTopFromBook` does **not** read by position either — it
+scans for `max(bid)` / `min(ask)`, which is correct under any ordering. Tests assert the
+captured real response *and* its reversed and shuffled permutations agree.
+
+**Discovery reads `/events`, not `/markets`** — a correctness requirement. An event nests
+every member market, so a neg-risk group arrives whole or not at all; paging over
+`/markets` can split a 51-member group across a page boundary. `groupIntoSets` checks the
+assembled leg count against the group size the event itself declares, and drops on any
+mismatch. "At least 2 legs" is not a completeness check: two legs of a 51-outcome race
+cost ~$0.39 and would present as a ~60¢ risk-free edge on a set that can never be
+redeemed.
 
 ### ✅ Auth
 
