@@ -50,7 +50,10 @@ const lock = await acquireLock({
   process.exit(1);
 });
 
-const db = openDb(cfg.db);
+// busyTimeoutMs is passed explicitly: the watchdog's hourly retention sweep takes the
+// write lock, so an insert here can genuinely queue behind it, and letting openDb's
+// default stand would make GPA_DB_BUSY_TIMEOUT_MS a no-op on the one process it is for.
+const db = openDb(cfg.db, { busyTimeoutMs: cfg.dbBusyTimeoutMs });
 const policy = createPersistPolicy({ missSampleMs: cfg.missSampleMs });
 
 /**
