@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import { DatabaseSync } from 'node:sqlite';
 
-import { openDb, retentionCutoffMs } from '../lib/db.mjs';
+import { openDb, persistMarkets, retentionCutoffMs } from '../lib/db.mjs';
 
 /** Build a scratch directory. Helpers build INPUTS, never expected outputs. */
 function scratch() {
@@ -338,4 +338,146 @@ test('an in-memory DB opens with the schema applied and needs no directory', () 
     .map((r) => r.name);
   assert.deepEqual(names, ['book_tops', 'markets', 'opportunities', 'opportunity_legs']);
   db.close();
+});
+
+
+// ── persistMarkets ──────────────────────────────────────────────────────────
+
+const marketRow = (over = {}) => ({
+  venue: 'polymarket',
+  eventKey: 'evt-1',
+  conditionId: 'cond-1',
+  tokenId: 'tok-1',
+  outcome: 'Yes',
+  marketSlug: 'a-slug',
+  category: 'politics',
+  feeRate: 0.04,
+  tickSize: 0.01,
+  minOrderSize: 5,
+  negRisk: false,
+  ...over,
+});
+
+test('persistMarkets writes discovered markets', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    const written = persistMarkets(db, [marketRow(), marketRow({ tokenId: 'tok-2', outcome: 'No' })], 1000);
+    assert.equal(written, 2);
+    const row = db.prepare('SELECT * FROM markets WHERE token_id = ?').get('tok-1');
+    assert.equal(row.category, 'politics');
+    assert.equal(row.fee_rate, 0.04);
+    assert.equal(row.neg_risk, 0);
+    assert.equal(row.first_seen, 1000);
+    assert.equal(row.last_seen, 1000);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets advances last_seen but PRESERVES first_seen', () => {
+  // A market's age is recoverable only if the first sighting survives re-discovery.
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    persistMarkets(db, [marketRow()], 1000);
+    persistMarkets(db, [marketRow({ category: 'crypto', feeRate: 0.07 })], 5000);
+    const row = db.prepare('SELECT * FROM markets WHERE token_id = ?').get('tok-1');
+    assert.equal(row.first_seen, 1000, 'preserved');
+    assert.equal(row.last_seen, 5000, 'advanced');
+    assert.equal(row.category, 'crypto', 'mutable metadata is refreshed');
+    assert.equal(row.fee_rate, 0.07);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM markets').get().n, 1, 'no duplicate row');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets treats the same token on another venue as a separate market', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    persistMarkets(db, [marketRow(), marketRow({ venue: 'kalshi' })], 1000);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM markets').get().n, 2);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets is atomic — a bad row writes none of the batch', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    assert.throws(() =>
+      persistMarkets(db, [marketRow(), marketRow({ tokenId: 'tok-2', venue: {} })], 1000),
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM markets').get().n, 0);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets stores nulls for absent optional metadata', () => {
+  // An unmapped market still belongs in the table: dropping it would make the
+  // uncategorised share invisible, which is itself a number worth watching.
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    persistMarkets(
+      db,
+      [{ venue: 'polymarket', eventKey: 'e', conditionId: 'c', tokenId: 't', outcome: 'Yes' }],
+      1000,
+    );
+    const row = db.prepare('SELECT * FROM markets WHERE token_id = ?').get('t');
+    assert.equal(row.market_slug, null);
+    assert.equal(row.category, null);
+    assert.equal(row.fee_rate, null);
+    assert.equal(row.tick_size, null);
+    assert.equal(row.min_order_size, null);
+    assert.equal(row.neg_risk, 0, 'absent negRisk is false, not null');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets records a neg-risk member with the flag set', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    persistMarkets(db, [marketRow({ negRisk: true })], 1000);
+    assert.equal(db.prepare('SELECT neg_risk n FROM markets').get().n, 1);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets writes nothing for an empty batch', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    assert.equal(persistMarkets(db, [], 1000), 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM markets').get().n, 0);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('persistMarkets rejects an unusable timestamp', () => {
+  const dir = scratch();
+  try {
+    const db = openDb(join(dir, 'a.db'));
+    for (const bad of [Number.NaN, '1000', null, undefined]) {
+      assert.throws(() => persistMarkets(db, [marketRow()], bad), /nowMs must be a finite number/);
+    }
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

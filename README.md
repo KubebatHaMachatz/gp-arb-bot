@@ -13,6 +13,13 @@ Polymarket over Apr 2024 – Apr 2025 ([arXiv:2508.03474](https://arxiv.org/abs/
 See [ANALYSIS.md](ANALYSIS.md) for why, and for what changed when Polymarket introduced
 taker fees in January 2026.
 
+## Running the measurement phase
+
+```bash
+node scripts/scan_polymarket.mjs   # read-only scanner -> data/arb.db
+node server.mjs                    # dashboard on http://127.0.0.1:4324
+```
+
 > **Status: pre-alpha.** Ships disarmed. The measurement phase (a read-only scanner that
 > records post-fee opportunity density) comes before any order-placing code exists — see
 > [PLAN.md](PLAN.md).
