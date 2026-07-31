@@ -2,7 +2,11 @@
 /**
  * Install this repo's LaunchAgents.
  *
- *   node scripts/launchd_install.mjs [--dry-run] [--service scan-polymarket]
+ *   node scripts/launchd_install.mjs [--dry-run] [--service scan-polymarket] [--node /path/to/node]
+ *
+ * Or, cwd-independently, from anywhere in the repo:
+ *
+ *   npm run launchd:install -- --dry-run
  *
  * Three services, each its own process so a stalled feed on one venue cannot touch
  * another: the Polymarket scanner, the Kalshi scanner, and the watchdog.
@@ -15,12 +19,18 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { labelFor, plistFor, plistPath } from '../lib/launchd.mjs';
+import {
+  DEFAULT_NODE_CANDIDATES,
+  isDurableNodePath,
+  labelFor,
+  plistFor,
+  plistPath,
+} from '../lib/launchd.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = homedir();
@@ -29,6 +39,7 @@ const LOG_DIR = join(REPO, 'logs');
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const only = args.includes('--service') ? args[args.indexOf('--service') + 1] : null;
+const override = args.includes('--node') ? args[args.indexOf('--node') + 1] : null;
 
 const SERVICES = [
   { name: 'scan-polymarket', script: 'scripts/scan_polymarket.mjs' },
@@ -36,10 +47,67 @@ const SERVICES = [
   { name: 'watchdog', script: 'scripts/watchdog.mjs' },
 ];
 
-// `process.execPath` rather than a bare `node`: launchd runs with a minimal PATH that
-// generally does not include a version manager's shims, so `node` alone resolves to
-// nothing and the service dies in a KeepAlive loop visible only in the system log.
-const NODE = process.execPath;
+/** Minimum runtime this repo needs, from package.json's `engines`. */
+const MIN_NODE = [22, 5];
+
+/** `vX.Y.Z` → [X, Y], or null when the binary did not answer. */
+function nodeVersionOf(path) {
+  try {
+    const out = execFileSync(path, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const m = /^v(\d+)\.(\d+)\./.exec(out.trim());
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  } catch {
+    return null;
+  }
+}
+
+const meetsMin = (v) => v !== null && (v[0] > MIN_NODE[0] || (v[0] === MIN_NODE[0] && v[1] >= MIN_NODE[1]));
+
+/**
+ * Pick the `node` the services will run under.
+ *
+ * An absolute path is required — launchd has a minimal PATH and no shell, so a bare
+ * `node` resolves to nothing. But `process.execPath` alone is not good enough either: it
+ * resolves symlinks onto whatever runtime is currently in front, which on this kind of
+ * machine is frequently a version manager's or a tool's private directory. See
+ * `isDurableNodePath` for why that breaks a LaunchAgent permanently and silently.
+ */
+function resolveNode() {
+  if (override) {
+    if (!override.startsWith('/')) {
+      console.error(`--node must be an absolute path, got "${override}"`);
+      process.exit(1);
+    }
+    const v = nodeVersionOf(override);
+    if (!meetsMin(v)) {
+      console.error(
+        `--node ${override} is ${v ? `v${v.join('.')}` : 'not runnable'}; need >= ${MIN_NODE.join('.')}`,
+      );
+      process.exit(1);
+    }
+    return override;
+  }
+
+  for (const candidate of DEFAULT_NODE_CANDIDATES) {
+    if (existsSync(candidate) && meetsMin(nodeVersionOf(candidate))) return candidate;
+  }
+
+  // Nothing durable qualified. Fall back to the running interpreter rather than refusing
+  // to install, but say plainly what was chosen and what will break, because the failure
+  // it invites is invisible when it happens.
+  if (!isDurableNodePath(process.execPath, HOME)) {
+    console.warn(
+      `WARNING: no durable node >= ${MIN_NODE.join('.')} found in ${DEFAULT_NODE_CANDIDATES.join(', ')}.\n` +
+        `  Falling back to ${process.execPath}, which lives in a hidden directory under your home —\n` +
+        '  a version manager or a tool-managed runtime. If that path moves or is removed, these\n' +
+        '  services stop starting, launchd retries forever, and nothing surfaces outside the system log.\n' +
+        '  Prefer: brew install node, then re-run. Or pass --node /absolute/path/to/node.',
+    );
+  }
+  return process.execPath;
+}
+
+const NODE = resolveNode();
 
 const selected = only ? SERVICES.filter((s) => s.name === only) : SERVICES;
 if (selected.length === 0) {

@@ -11,6 +11,12 @@
     "test": "node --no-warnings --test 'test/*.test.mjs'",
     "test:watch": "node --no-warnings --test --watch 'test/*.test.mjs'",
     "coverage": "node --no-warnings --experimental-test-coverage --test-coverage-include 'lib/**/*.mjs' --test 'test/*.test.mjs'",
-    "mutate": "npx --yes @stryker-mutator/core@9.6.1 run stryker.config.mjs"
+    "mutate": "npx --yes @stryker-mutator/core@9.6.1 run stryker.config.mjs",
+    "scan:polymarket": "node scripts/scan_polymarket.mjs",
+    "scan:kalshi": "node scripts/scan_kalshi.mjs",
+    "watchdog": "node scripts/watchdog.mjs",
+    "dashboard": "node server.mjs",
+    "launchd:install": "node scripts/launchd_install.mjs",
+    "launchd:uninstall": "node scripts/launchd_uninstall.mjs"
   }
 }

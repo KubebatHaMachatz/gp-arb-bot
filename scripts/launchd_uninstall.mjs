@@ -4,6 +4,10 @@
  *
  *   node scripts/launchd_uninstall.mjs [--service scan-polymarket]
  *
+ * Or, cwd-independently, from anywhere in the repo:
+ *
+ *   npm run launchd:uninstall
+ *
  * Unloads each service and deletes its plist. The database and the logs are left alone —
  * uninstalling the scheduler is not a request to destroy the measurement it collected,
  * and that data is the entire input to the Phase 2 decision.
