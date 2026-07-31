@@ -1,0 +1,28 @@
+# credentials — never commit
+.env
+.env.*
+*credentials*
+*.pem
+*.key
+
+# data / db
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.csv
+*.bak
+
+# logs / reports
+logs/
+reports/
+backups/
+
+# node
+node_modules/
+package-lock.json
+.stryker-tmp/
+
+# os
+.DS_Store
