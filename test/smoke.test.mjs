@@ -132,9 +132,12 @@ test('readPackageMeta reads this repo\'s real package.json by default', () => {
 });
 
 test('readPackageMeta reads an explicitly supplied path', () => {
+  // Oracle read independently with readFileSync/JSON.parse — never by calling
+  // readPackageMeta itself, which would let a wrong result agree with itself.
+  const onDisk = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   assert.deepEqual(readPackageMeta(join(REPO_ROOT, 'package.json')), {
-    name: 'gp-arb-bot',
-    version: readPackageMeta().version,
+    name: onDisk.name,
+    version: onDisk.version,
   });
 });
 

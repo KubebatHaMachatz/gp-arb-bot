@@ -83,19 +83,27 @@ This is structural, not pedantic:
 
 ## 3. The post's own numbers refute its thesis
 
-Profit breakdown, matching the paper exactly:
+Profit breakdown **as the post itself states it** (its components match the paper's):
 
 ```
 Single-condition (YES + NO ≠ $1)      $10,581,362     26.7%
 Market rebalancing (neg-risk sets)    $29,011,589     73.1%   ← buy-all-NO alone: $17.3M
-Combinatorial (cross-market)          $    94,157      0.24%  ← the only place the math applies
+Combinatorial (cross-market)          $    95,634      0.24%  ← the only place the math applies
                                       ───────────
-                                      $39,687,108
+                                      $39,688,585
 ```
 
 The combinatorial bucket — the sole category where dependency detection and Bregman
-projection would even be *relevant* — is a rounding error, found in 5 of 11 exploitable
-pairs. The post spends three of five parts on machinery that produced 0.24% of the money.
+projection would even be *relevant* — is a rounding error. The paper puts it more
+precisely at **$94,156.71**, found in 5 of 11 exploitable pairs. The post spends three of
+five parts on machinery that produced roughly two tenths of one percent of the money.
+
+> Two arithmetic notes, since this document's whole argument is "check the numbers."
+> The figures above are quoted from one source (the post) rather than summed across two —
+> mixing the post's first two lines with the paper's more precise third yields a total
+> that matches neither. Separately, the post's own rebalancing subtotal is internally
+> short by $4,300: the paper reports four components there, and the post's `$29,011,589`
+> is the sum of only the first three, silently dropping "sell all NO."
 
 ## 4. Technical errors that would mislead a builder
 
