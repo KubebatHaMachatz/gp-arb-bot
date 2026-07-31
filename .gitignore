@@ -20,8 +20,11 @@ reports/
 backups/
 
 # node
+# package-lock.json is deliberately NOT ignored. A-11 adds @noble/curves (pinned exact)
+# on the order-signing path, which handles a hot wallet private key — the lockfile is what
+# pins its transitive tree across installs. Ignoring it would leave that resolution
+# floating on exactly the dependency where it matters most.
 node_modules/
-package-lock.json
 .stryker-tmp/
 
 # os
