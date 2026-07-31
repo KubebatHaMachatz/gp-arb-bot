@@ -106,14 +106,41 @@ silently oversizes the trade.
 ## 4. Configuration
 
 `GPA_` prefix (siblings on this machine use `PMM_`/`KRO_`/`SPB_`/`WEATHERBOT_`/
-`OPENRANGE_`/`BREAKOUT_BOT_`). Every knob is validated at startup and **throws** on a bad
-value — no silent fallback to a default.
+`OPENRANGE_`/`BREAKOUT_BOT_`). See `lib/config.mjs`.
+
+**The rule:** an **unset** knob uses its default; a knob **set to something invalid** is a
+startup crash naming the variable and quoting the value. Never a silent fallback — a bot
+running on a default the operator thought they had overridden loses money without leaving
+a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set this").
+
+| Var | Default | Range | Effect |
+|---|---|---|---|
+| `GPA_DB` | `data/arb.db` | non-empty | SQLite file path |
+| `GPA_BOOK_STALE_MS` | `750` | 1–60000 | Freshness gate — never act on a book image older than this. Bounded **both** ways: `0` rejects every book, and a huge value is not a lenient gate but *no* gate. |
+| `GPA_MIN_NET_EDGE` | `0.005` | (0, 1] | Minimum post-fee edge per complete set, as a price fraction |
+| `GPA_MAX_SET_SIZE_USD` | `250` | > 0 | Hard cap on notional per complete set |
+| `GPA_DEPTH_SAFETY_FACTOR` | `0.5` | (0, 1] | Size to `min(depth) × this`. **0 is rejected** — it is not "disabled", it silently sizes every trade to nothing. |
+| `GPA_KEEP_OPP_DAYS` | `90` | ≥ 0 | `opportunities` retention; **0 = disabled** |
+| `GPA_DB_BUSY_TIMEOUT_MS` | `5000` | ≥ 0 | SQLite `busy_timeout`. **0 IS valid** — SQLite's defined "fail immediately on lock conflict" mode. |
+| `GPA_BIND` | `127.0.0.1` | non-empty | Dashboard bind host; loopback-only unless changed |
+| `GPA_PORT` | `4324` | 1024–65535 | Dashboard HTTP port |
+| `GPA_LOCK_PORT_POLYMARKET` | `43241` | 1024–65535 | Singleton lock, Polymarket scanner |
+| `GPA_LOCK_PORT_KALSHI` | `43242` | 1024–65535 | Singleton lock, Kalshi scanner |
+| `GPA_LOCK_PORT_LIMITLESS` | `43243` | 1024–65535 | Singleton lock, Limitless scanner |
+
+Note the deliberate asymmetry between `GPA_DEPTH_SAFETY_FACTOR` (0 invalid) and
+`GPA_DB_BUSY_TIMEOUT_MS` (0 valid). They look like the same "non-negative number" rule and
+are not. Do not unify them.
+
+All four ports are also checked **against each other** — two writers sharing a lock port
+is a silent failure where the second process refuses to start and that venue is simply
+never collected, with no error anywhere.
 
 Ports claimed by this repo on this machine (registered in `~/code/bot_ports.txt`):
 
 | What | Port |
 |---|---|
-| Singleton lock block | **43241–43249** |
+| Singleton lock block | **43241–43249** (43241/2/3 wired, rest reserved) |
 | Dashboard | **4324** |
 
 Before claiming any new port anywhere on this machine: check `~/code/bot_ports.txt`
