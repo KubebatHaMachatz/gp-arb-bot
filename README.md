@@ -17,7 +17,7 @@ taker fees in January 2026.
 
 ```bash
 node scripts/scan_polymarket.mjs   # read-only scanner -> data/arb.db
-node server.mjs                    # dashboard on http://127.0.0.1:4324
+node server.mjs                    # dashboard on http://localhost:4324
 ```
 
 > **Status: pre-alpha.** Ships disarmed. The measurement phase (a read-only scanner that

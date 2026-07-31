@@ -2,7 +2,7 @@
 /**
  * Dashboard + JSON API for the Phase 1 readout.
  *
- *   node server.mjs        # http://127.0.0.1:4324
+ *   node server.mjs        # http://localhost:4324
  *
  * Two deliberate properties:
  *
@@ -80,8 +80,14 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(cfg.port, cfg.bind, () => {
-  const where = cfg.bind === '127.0.0.1' ? 'loopback only' : `bound to ${cfg.bind}`;
-  console.log(`gp-arb-bot dashboard on http://${cfg.bind}:${cfg.port} (${where})`);
+  const loopback = cfg.bind === '127.0.0.1';
+  // Print the HOSTNAME, not the bind address. They reach the same server, but some
+  // embedded browsers whitelist `localhost` and reject the equivalent IP literal, which
+  // makes a 127.0.0.1 link unclickable. The bind address is unchanged — that is the
+  // security property, and it is set by GPA_BIND, not by how the URL is spelled.
+  const host = loopback ? 'localhost' : cfg.bind;
+  const where = loopback ? 'loopback only' : `bound to ${cfg.bind}`;
+  console.log(`gp-arb-bot dashboard on http://${host}:${cfg.port} (${where})`);
   console.log(`reading ${cfg.db} (read-only); clear floor ${cfg.minNetEdge}`);
 });
 
