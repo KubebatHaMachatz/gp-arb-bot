@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_NODE_CANDIDATES,
+  flagValue,
   isDurableNodePath,
   labelFor,
   plistFor,
@@ -38,8 +39,20 @@ const LOG_DIR = join(REPO, 'logs');
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
-const only = args.includes('--service') ? args[args.indexOf('--service') + 1] : null;
-const override = args.includes('--node') ? args[args.indexOf('--node') + 1] : null;
+
+/** Read a value-taking flag, or exit naming it. See lib/launchd.mjs for why. */
+function requireFlag(name) {
+  const { value, error } = flagValue(args, name);
+  if (error) {
+    const example = name === '--node' ? '/opt/homebrew/bin/node' : 'scan-polymarket';
+    console.error(`${error}, e.g. ${name} ${example}`);
+    process.exit(1);
+  }
+  return value;
+}
+
+const only = requireFlag('--service');
+const override = requireFlag('--node');
 
 const SERVICES = [
   { name: 'scan-polymarket', script: 'scripts/scan_polymarket.mjs' },

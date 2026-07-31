@@ -5,6 +5,7 @@ import {
   DEFAULT_NODE_CANDIDATES,
   LABEL_PREFIX,
   assertNoSecrets,
+  flagValue,
   isDurableNodePath,
   isSecretKey,
   labelFor,
@@ -254,4 +255,48 @@ test('DEFAULT_NODE_CANDIDATES lists durable system prefixes, most-preferred firs
     assert.equal(p.startsWith('/'), true, p);
     assert.equal(isDurableNodePath(p, HOME), true, p);
   }
+});
+
+// ── flag parsing: never guess a missing value ───────────────────────────────
+
+test('flagValue reads the token after the flag', () => {
+  assert.deepEqual(flagValue(['--service', 'watchdog'], '--service'), {
+    value: 'watchdog',
+    error: null,
+  });
+  assert.deepEqual(flagValue(['--dry-run', '--node', '/usr/bin/node'], '--node'), {
+    value: '/usr/bin/node',
+    error: null,
+  });
+});
+
+test('an absent flag is null with no error — not supplied is not an error', () => {
+  assert.deepEqual(flagValue(['--dry-run'], '--service'), { value: null, error: null });
+  assert.deepEqual(flagValue([], '--service'), { value: null, error: null });
+});
+
+test('a TRAILING value-taking flag is an error, never "not supplied"', () => {
+  // This is the whole point. Falling through to "not supplied" makes a trailing
+  // --service select EVERY service: an install bootstraps three LaunchAgents when one was
+  // asked for, and an uninstall tears down a running measurement.
+  const r = flagValue(['--dry-run', '--service'], '--service');
+  assert.equal(r.value, null);
+  assert.match(r.error, /--service requires a value/);
+});
+
+test('a following flag does not become the value', () => {
+  // `--service --dry-run` would otherwise report `unknown service "--dry-run"`, which
+  // names the wrong problem and sends the operator looking at the service list.
+  const r = flagValue(['--service', '--dry-run'], '--service');
+  assert.equal(r.value, null);
+  assert.match(r.error, /requires a value/);
+});
+
+test('a value that merely contains dashes is fine', () => {
+  assert.equal(flagValue(['--service', 'scan-polymarket'], '--service').value, 'scan-polymarket');
+});
+
+test('a negative-looking value is still a value', () => {
+  // Only a leading `--` marks a flag; a single dash is not this parser's concern.
+  assert.equal(flagValue(['--node', '-'], '--node').value, '-');
 });
