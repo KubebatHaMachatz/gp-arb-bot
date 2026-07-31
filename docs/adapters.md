@@ -32,12 +32,83 @@ is written.
 
 | Venue | Discovery | Book | Economics | Complete-set mechanics | Auth (reads) | Adapter |
 |---|---|---|---|---|---|---|
-| **Polymarket** | ❓ | ❓ | ❓ | ❓ | ❓ | not started (A-5) |
-| **Kalshi** | ❓ | ❓ | ❓ | ❓ | ❓ | not started (A-8) |
-| **Limitless** | ❓ | ❓ | ❓ | ❓ | ❓ | not started (A-9) |
+| **Polymarket** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-5) |
+| **Kalshi** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-8) |
+| **Limitless** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-9) |
 
 No adapter code exists yet. Each row is filled in by its own verify-first spike, logged
 below, before the corresponding item in [PLAN.md](../PLAN.md) is built.
+
+## Fee schedules — ✅ VERIFIED 2026-07-31 (implemented in `lib/fees.mjs`)
+
+The one section of this file that has graduated from lead to fact. Pinned against each
+venue's own published schedule, not a third-party summary.
+
+### The two fee SHAPES are not interchangeable
+
+| Venue | Shape | Per-share fee |
+|---|---|---|
+| Polymarket | quadratic, per share | `rate × p × (1 − p)` |
+| Kalshi | quadratic, per share | `0.07 × p × (1 − p)` |
+| **Limitless** | **rate on NOTIONAL** | **`rate(p, side) × p`** |
+
+Conflating them is the error class [ANALYSIS.md](../ANALYSIS.md) documents. Two
+consequences that drive real design decisions:
+
+1. **`p(1−p)` shrinks toward the price extremes.** A Polymarket politics complete set at
+   0.50/0.45 costs `0.04·0.25 + 0.04·0.2475 = 0.0199` (~2.0¢); the same set at 0.90/0.05
+   costs `0.04·0.09 + 0.04·0.0475 = 0.0055` (~0.55¢). **3.62× cheaper.** The detection
+   threshold is therefore a function of the leg prices, never a flat constant.
+2. **Limitless never decays to zero.** At p=0.999 Polymarket's crypto fee is
+   ~0.00007/share while Limitless holds a ~0.40% floor. No finite scalar bounds the
+   ratio, so no flat `feeRate` can safely stand in for the curve.
+
+### Polymarket — taker only, makers pay zero and earn rebates
+
+Source: <https://docs.polymarket.com/trading/fees>. Formula `fee = C × feeRate × p × (1 − p)`.
+
+| Category | `feeRate` |
+|---|---|
+| crypto | 0.07 |
+| sports, economics, culture, weather, other | 0.05 |
+| politics, finance, tech, mentions | 0.04 |
+| **geopolitics / world events** | **0** |
+
+Geopolitics being genuinely fee-free is a fact about the schedule, not an unmapped
+category — it is where taker arbitrage still works cleanly, and therefore where
+competition concentrates. `lib/fees.mjs` **throws** on any category outside this table
+rather than defaulting to zero; a zero-fee fallback would understate cost and manufacture
+arbitrage that does not exist.
+
+### Kalshi — taker only, and NO maker rebate anywhere in the schedule
+
+Sources: <https://kalshi.com/fee-schedule>, <https://docs.kalshi.com/getting_started/fee_rounding>.
+`fee = 0.07 × C × p × (1 − p)`, **side-independent** (a NO buy at `1−p` is algebraically
+the YES fee at `p`), rounded up to the nearest $0.0001.
+
+Structurally unlike the other two: a Kalshi maker either pays a maker fee (non-standard
+series) or pays nothing — **no series pays the maker**. There is a separate designated
+market-maker programme, but it is application-gated and not something a retail quoter
+earns by default.
+
+❓ Still unverified for this repo's market class: the tapered tick (0.001 / 0.010 / 0.001
+by price band) was verified for 15-minute crypto series in the sibling repo and has not
+been re-checked against multi-outcome event markets.
+
+### Limitless — taker only, makers rebated 100% of eligible taker fees
+
+Source: <https://docs.limitless.exchange/user-guide/fees>. The docs publish a **table, not
+a formula**; `lib/fees.mjs` interpolates linearly between the published points and clamps
+flat outside them.
+
+| p | 0.01 | 0.05 | 0.10 | 0.20 | 0.30 | 0.40 | 0.50 | 0.55 | 0.60 | 0.65 | 0.70 | 0.75 | 0.80 | 0.85 | 0.90 | 0.95 | 0.99 | 0.999 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **BUY** | 3.00% | — | — | — | — | — | 3.00% | 2.52% | 2.13% | 1.80% | 1.51% | 1.26% | 1.05% | 0.85% | 0.68% | 0.53% | 0.42% | 0.40% |
+| **SELL** | 0.42% | 0.60% | 0.78% | 1.11% | 1.32% | 1.44% | **1.50%** | — | 1.44% | — | 1.32% | — | 1.11% | — | 0.78% | 0.60% | 0.45% | 0.42% |
+
+The two curves are **not mirror images** and their ordering inverts: at p=0.50 BUY costs
+2× SELL, but by p=0.90 SELL is the dearer side. `limitlessTakerFee` therefore **requires**
+an explicit side rather than defaulting one.
 
 ## Leads to verify (NOT yet facts)
 
