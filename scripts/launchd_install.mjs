@@ -47,6 +47,9 @@ if (selected.length === 0) {
   process.exit(1);
 }
 
+/** Services whose plist was written but which launchctl refused to load. */
+const failures = [];
+
 if (!dryRun) {
   mkdirSync(LOG_DIR, { recursive: true });
   mkdirSync(join(HOME, 'Library', 'LaunchAgents'), { recursive: true });
@@ -76,8 +79,24 @@ for (const svc of selected) {
   } catch {
     // not currently loaded — the normal case on a first install
   }
-  execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, path], { stdio: 'inherit' });
-  console.log(`installed ${label} -> ${path}`);
+
+  // A failure on one service must not abort the loop. Throwing here would leave the
+  // remaining services untouched and the already-written plists loaded or not depending
+  // on where it stopped — a half-installed state reported only as a stack trace.
+  try {
+    execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, path], { stdio: 'inherit' });
+    console.log(`installed ${label} -> ${path}`);
+  } catch (err) {
+    failures.push(label);
+    console.error(`FAILED to load ${label}: ${err.message}`);
+    console.error(`  the plist is written at ${path}; load it with:`);
+    console.error(`  launchctl bootstrap gui/${process.getuid()} ${path}`);
+  }
 }
 
 if (dryRun) console.log('(dry run — nothing was written or loaded)');
+
+if (failures.length > 0) {
+  console.error(`\n${failures.length} of ${selected.length} service(s) failed to load: ${failures.join(', ')}`);
+  process.exit(1);
+}

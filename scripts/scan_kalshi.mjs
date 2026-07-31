@@ -166,4 +166,4 @@ do {
   if (gap > 0) await new Promise((r) => setTimeout(r, gap));
 } while (!stopping);
 
-if (once) shutdown('--once');
+if (once) await shutdown('--once');

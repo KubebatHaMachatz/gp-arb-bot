@@ -277,10 +277,12 @@ const rediscovery = setInterval(async () => {
 async function shutdown(reason) {
   if (stopping) return;
   stopping = true;
-  const drift = bookDrift.stats();
+  // Both detectors, not just the book one: a price_change rename is just as silent, and
+  // reporting one counter would read as "no drift" while the other was firing.
+  const drifted = bookDrift.stats().drifted + priceChangeDrift.stats().drifted;
   log(
     `shutting down (${reason}); scans=${scanned} evaluated=${evaluated} ` +
-      `recorded=${recorded} clears=${cleared} driftedFrames=${drift.drifted}`,
+      `recorded=${recorded} clears=${cleared} driftedFrames=${drifted}`,
   );
   clearInterval(keepalive);
   clearInterval(report);

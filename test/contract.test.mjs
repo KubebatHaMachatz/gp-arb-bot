@@ -118,18 +118,40 @@ test('a DIFFERENT set of missing keys is reported immediately, not suppressed', 
   assert.deepEqual(seen[1].missing, ['asset_id']);
 });
 
-test('a clean payload reports nothing and clears the suppression', () => {
+test('a clean payload reports nothing', () => {
   const seen = [];
   const d = createDriftDetector({ required: KEYS, label: 'book', onDrift: (r) => seen.push(r), repeatMs: 60_000 });
+  assert.equal(d.check({ asset_id: 'x', asks: [] }, 1002), true);
+  assert.equal(seen.length, 0);
+});
+
+test('interleaved clean frames do NOT reset the suppression', () => {
+  // Partial drift is the common shape: a venue drops a field from delta frames while
+  // keeping it in snapshots, so clean and drifted frames alternate. Clearing suppression
+  // on each clean frame produced a measured 1,000 reports where 1 was due -- inside a
+  // 15-minute window, over two seconds of traffic. Suppression is time-based only.
+  const seen = [];
+  const d = createDriftDetector({ required: KEYS, label: 'book', onDrift: (r) => seen.push(r), repeatMs: 900_000 });
+
+  for (let i = 0; i < 2000; i += 1) {
+    if (i % 2 === 0) d.check({ asset_id: 'x', asks: [] }, 1000 + i);
+    else d.check({ asset_id: 'x' }, 1000 + i);
+  }
+  assert.equal(seen.length, 1, 'one signature, one report');
+  assert.deepEqual(d.stats(), { checked: 2000, drifted: 1000, reported: 1 });
+});
+
+test('a distinct drift still reports immediately, even after a clean run', () => {
+  // Time-based suppression must not become "report once and go quiet": a SECOND schema
+  // change is new information and cannot wait out the first one's interval.
+  const seen = [];
+  const d = createDriftDetector({ required: KEYS, label: 'book', onDrift: (r) => seen.push(r), repeatMs: 900_000 });
 
   d.check({ asset_id: 'x' }, 1000);
-  assert.equal(d.check({ asset_id: 'x', asks: [] }, 1002), true);
-  assert.equal(seen.length, 1);
-
-  // Recovered, then drifted again inside the repeat window: this is a NEW event and the
-  // operator needs it, so recovery must reset the timer rather than leave it armed.
-  d.check({ asset_id: 'x' }, 1003);
+  d.check({ asset_id: 'x', asks: [] }, 1001);
+  d.check({ asks: [] }, 1002);
   assert.equal(seen.length, 2);
+  assert.deepEqual(seen[1].missing, ['asset_id']);
 });
 
 test('the detector counts what it has seen, so a quiet run is distinguishable from a dead one', () => {
