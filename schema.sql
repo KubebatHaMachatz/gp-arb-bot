@@ -67,9 +67,13 @@ CREATE TABLE IF NOT EXISTS opportunities (
   ts              INTEGER NOT NULL,
   kind            TEXT    NOT NULL,  -- 'binary' | 'neg_risk'
   leg_count       INTEGER NOT NULL,
-  gross_cost      REAL    NOT NULL,  -- sum of leg prices, before fees
-  total_fee       REAL    NOT NULL,  -- sum of per-leg taker fees
-  net_edge        REAL    NOT NULL,  -- 1 - gross_cost - total_fee
+  -- NULLABLE on purpose. A set gated out by the freshness check makes NO edge claim, so
+  -- these stay NULL while `skip_reason` says why. Declaring them NOT NULL would make the
+  -- skipped row unstorable, and skipped rows are precisely what makes the gate's own
+  -- cost measurable -- silently dropping them would flatter every capture-rate figure.
+  gross_cost      REAL,              -- sum of leg prices, before fees
+  total_fee       REAL,              -- sum of per-leg taker fees
+  net_edge        REAL,              -- 1 - gross_cost - total_fee
   capacity_shares REAL,              -- min(shares) across legs, x the safety factor
   capacity_usd    REAL,              -- capacity_shares x (gross_cost + total_fee)
   -- WHICH constraint bound the size: a leg index (as text) or the literal 'notional'.

@@ -167,6 +167,7 @@ test('DEFAULTS is exported and agrees with what loadConfig({}) produces', () => 
   assert.equal(DEFAULTS.GPA_MIN_NET_EDGE, 0.005);
   assert.equal(DEFAULTS.GPA_MAX_SET_SIZE_USD, 250);
   assert.equal(DEFAULTS.GPA_DEPTH_SAFETY_FACTOR, 0.5);
+  assert.equal(DEFAULTS.GPA_MISS_SAMPLE_MS, 300000);
   assert.equal(DEFAULTS.GPA_KEEP_OPP_DAYS, 90);
   assert.equal(DEFAULTS.GPA_DB_BUSY_TIMEOUT_MS, 5000);
   assert.equal(DEFAULTS.GPA_BIND, '127.0.0.1');
@@ -279,6 +280,16 @@ test('GPA_BOOK_STALE_MS is capped — a huge value is no gate at all, not a leni
 test('GPA_MAX_SET_SIZE_USD must be strictly positive', () => {
   assert.throws(() => loadConfig({ GPA_MAX_SET_SIZE_USD: '0' }), /GPA_MAX_SET_SIZE_USD must be > 0/);
   assert.throws(() => loadConfig({ GPA_MAX_SET_SIZE_USD: '-5' }), /GPA_MAX_SET_SIZE_USD must be > 0/);
+});
+
+test('GPA_MISS_SAMPLE_MS bounds how often a NON-clearing set is re-recorded', () => {
+  // 0 is valid here and means "record every miss" -- a diagnostic setting. It is not
+  // the same rule as GPA_DEPTH_SAFETY_FACTOR, where 0 is meaningless.
+  assert.equal(loadConfig({}).missSampleMs, 300000);
+  assert.equal(loadConfig({ GPA_MISS_SAMPLE_MS: '0' }).missSampleMs, 0);
+  assert.equal(loadConfig({ GPA_MISS_SAMPLE_MS: '60000' }).missSampleMs, 60000);
+  assert.throws(() => loadConfig({ GPA_MISS_SAMPLE_MS: '-1' }), /GPA_MISS_SAMPLE_MS must be >= 0/);
+  assert.throws(() => loadConfig({ GPA_MISS_SAMPLE_MS: 'soon' }), /GPA_MISS_SAMPLE_MS must be an integer/);
 });
 
 test('GPA_KEEP_OPP_DAYS accepts 0 as "retention disabled" but rejects negatives', () => {

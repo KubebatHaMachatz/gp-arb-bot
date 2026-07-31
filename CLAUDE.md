@@ -120,6 +120,7 @@ a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set
 | `GPA_MIN_NET_EDGE` | `0.005` | (0, 1] | Minimum post-fee edge per complete set, as a price fraction |
 | `GPA_MAX_SET_SIZE_USD` | `250` | > 0 | Hard cap on notional per complete set |
 | `GPA_DEPTH_SAFETY_FACTOR` | `0.5` | (0, 1] | Size to `min(depth) × this`. **0 is rejected** — it is not "disabled", it silently sizes every trade to nothing. |
+| `GPA_MISS_SAMPLE_MS` | `300000` | ≥ 0 | How often a **non-clearing** set may be re-recorded, per event key. Clears are always written. **0 records every miss** — a diagnostic setting; a live run without this bound wrote 635k rows and 346MB in 54s. |
 | `GPA_KEEP_OPP_DAYS` | `90` | ≥ 0 | `opportunities` retention; **0 = disabled** |
 | `GPA_DB_BUSY_TIMEOUT_MS` | `5000` | ≥ 0 | SQLite `busy_timeout`. **0 IS valid** — SQLite's defined "fail immediately on lock conflict" mode. |
 | `GPA_BIND` | `127.0.0.1` | non-empty | Dashboard bind host; loopback-only unless changed |
