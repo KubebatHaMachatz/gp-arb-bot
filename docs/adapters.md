@@ -32,7 +32,7 @@ is written.
 
 | Venue | Discovery | Book | Economics | Complete-set mechanics | Auth (reads) | Adapter |
 |---|---|---|---|---|---|---|
-| **Polymarket** | ✅ | ✅ | ⛔ category not derivable | ✅ grouping | ✅ none needed | BLOCKED (A-5) |
+| **Polymarket** | ✅ | ✅ | ✅ via `feeType` | ✅ grouping | ✅ none needed | ✅ A-5 |
 | **Kalshi** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-8) |
 | **Limitless** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-9) |
 
@@ -164,57 +164,62 @@ Sources: <https://docs.polymarket.com/concepts/negative-risk>, live
   therefore **per market**, never per event or per venue.
 - `neg_risk` is roughly half the universe: 504 of 1000 sampled markets.
 
-### ⛔ BLOCKER — the fee category is NOT derivable from the read path
+### ✅ Fee category — RESOLVED via `feeType` (corrects an earlier reading in this file)
 
-`lib/fees.mjs` needs a category (`politics`, `crypto`, …) to pick the taker rate. **No
-such field exists** on either the Gamma or the CLOB market object. What exists instead:
+**`feeType` on the Gamma market object is the fee category, stated explicitly** as
+`<category>_fees[_v2]`. Enumerated over **500 unique live markets** (2026-07-31):
 
-1. **`tags`** — free-form editorial labels (`['Politics', 'Elections', 'Global
-   Elections', 'Ethiopia', 'Main Election']`). Not a fee enum. Measured against 1000
-   live markets:
-   - **37 markets carry no `lib/fees.mjs` category name in their tags at all** — e.g.
-     `['Business','AI','IPOs','Big Tech']`, `['Fed','Fed Rates','Economy','Macro Single',…]`,
-     `['Pandemics','World','Climate & Science']`.
-   - Worse, tags **cross-cut actual fee status**: `'Politics'` appears on **45 of the 66**
-     markets the venue charges **nothing** for *and* on **544 of the 934** it does charge.
-     A tag→category mapping would therefore assign a non-zero rate to genuinely fee-free
-     markets and vice versa — silently, in both directions.
-   - Tags are also multi-valued and unordered for this purpose; a market tagged both
-     `Politics` and `Crypto` has no defined winner.
-2. **`taker_base_fee` / `maker_base_fee`** — present per market, and they **partition the
-   universe exactly the way the fee schedule implies**: `0` on 66 markets, `1000` on 934,
-   and the 66 are overwhelmingly geopolitical (`Geopolitics` 48, `World` 34, plus Middle
-   East / Israel / Venezuela / Russia / Iran), matching [ANALYSIS.md](../ANALYSIS.md)'s
-   "geopolitics is still fee-free". **But the units are ❓ and the field is not safe to
-   read as the taker rate**: `taker_base_fee` is *identical* to `maker_base_fee` on every
-   market sampled, and Polymarket charges takers while rebating makers — so a value equal
-   on both sides is not a per-side rate. `1000` also matches none of the published rates
-   (0.04 / 0.05 / 0.07) under any obvious scaling.
-3. **`GET /fees`** — the documented "fee schedule per instrument type and category"
-   endpoint is `api.perpetuals.polymarket.com/v1/info/fees`, for **perpetual futures**
-   (categories equity / commodity / index / crypto). A **different product**; it does not
-   describe event contracts. `clob.polymarket.com/fees` and `/fee-schedule` are 404.
-4. Gamma reports `feesEnabled: false` and `feeType: null` on every market in the sampled
-   neg-risk event, which is a *third* signal that does not obviously reconcile with the
-   published per-category schedule.
+| `feeType` | count | → `lib/fees.mjs` category | rate |
+|---|---|---|---|
+| `politics_fees` | 292 | politics | 0.04 |
+| `sports_fees_v2` | 65 | sports | 0.05 |
+| `crypto_fees_v2` | 50 | crypto | 0.07 |
+| `null` | 35 | fee-exempt → `geopolitics` | 0 |
+| `tech_fees` | 17 | tech | 0.04 |
+| `general_fees` | 15 | ❓ **unmapped** | — |
+| `culture_fees` | 10 | culture | 0.05 |
+| `weather_fees` | 7 | weather | 0.05 |
+| `economics_fees` | 6 | economics | 0.05 |
+| `finance_prices_fees` | 3 | finance | 0.04 |
 
-**Consequence — the adapter is not written.** Guessing a tag→category mapping is exactly
-the failure `lib/fees.mjs` was built to prevent: a wrong rate does not produce a slightly
-wrong number, it manufactures or destroys edge silently, and the measurement above shows
-a tag-based guess would be wrong in both directions on real markets. Per CLAUDE.md §0
-this stays ❓ until pinned against a primary source. **Operator decision required — see
-the open question below.**
+**`feesEnabled === (feeType !== null)` held with zero exceptions** (465 / 35), so a null
+`feeType` is the genuinely fee-exempt bucket rather than missing data.
 
-### ❓ Open questions blocking A-5
+> **Correction.** An earlier pass of this spike concluded the category was underivable.
+> That was generalised from a single event (`next-prime-minister-of-ethiopia`) whose 33
+> markets all happen to be fee-exempt, so every one of them showed `feeType: null`. A
+> broader sample refutes it. The mapping table above is the fact; `tags` and
+> `taker_base_fee` are not needed and are not used.
 
-- What are `taker_base_fee` / `maker_base_fee` denominated in, and is either the
-  effective per-market taker rate? (If yes, this is *better* than a category lookup — it
-  is the venue's own per-market ground truth and would remove the category concept from
-  the adapter entirely.)
-- Is there any authenticated or undocumented endpoint that returns a market's fee
-  category / effective rate?
-- Does `feesEnabled: false` mean this market charges no taker fee today, overriding the
-  published category schedule?
+**What is NOT used, and why:**
+
+- **`tags`** — editorial labels that cross-cut real fee status. `'Politics'` appears on
+  45 of the 66 markets the venue charges nothing for *and* on 544 of the 934 it does
+  charge, and 37 of 1000 markets carry no recognisable category name at all. A tag-based
+  mapping would be wrong in both directions.
+- **`taker_base_fee` / `maker_base_fee`** — ❓ units unverified, and the two are
+  *identical* on every market sampled (0 or 1000). A venue that charges takers while
+  rebating makers cannot have one number for both, so this is not a per-side rate.
+  Unused, and no longer needed.
+- **`GET /fees`** — `api.perpetuals.polymarket.com`, i.e. perpetual futures. A different
+  product. `clob.polymarket.com/fees` is 404.
+
+**❓ `general_fees` remains unmapped** (~3% of markets). Its stem is not a category in the
+published schedule, so its rate is genuinely unknown. `feeCategoryFor` returns `null` and
+`groupIntoSets` **drops** any set containing such a leg, counted as `unmapped_fee_type` —
+rather than guessing 0.05, which would understate a 0.07 market and manufacture edge.
+
+### ✅ Order book — the best price is LAST on BOTH sides
+
+`GET https://clob.polymarket.com/book?token_id=` — public, no auth. Live response:
+**`bids` ascend and `asks` descend**, so index 0 is the *worst* price on each side
+(0.001 and 0.999 on the sample) and the best is the final element. Cross-checked against
+Gamma's independently reported `bestBid: 0.193` / `bestAsk: 0.194` for the same token at
+the same moment. Prices and sizes are **strings**; `timestamp` is a string of epoch ms.
+Sizes are **share counts**.
+
+Reading index 0 would misprice every set catastrophically, so `bookTopFromBook` takes the
+last level and a test pins the convention against the captured real response.
 
 ### ✅ Auth
 
