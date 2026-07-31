@@ -76,6 +76,9 @@ failure.
    server.mjs + public/  →  opportunity density, post-fee edge distribution,
                             depth-cleared counts        (http://localhost:4324)
             │
+   scripts/watchdog.mjs  →  per-venue feed staleness + retention sweep
+   (lib/watchdog.mjs, lib/notify.mjs)                   → Telegram, inert by default
+            │
             ▼  [Phase 2 only, inert by default]
    lib/broker.mjs (gated executor) → lib/settle.mjs (merge / convert / redeem)
 ```
@@ -86,6 +89,16 @@ failure.
   Detection, sizing, persistence and the dashboard never branch on venue name.
 - **Pure core:** `lib/fees.mjs` and `lib/arb.mjs` are pure functions with no I/O. They are
   where the money is decided, so they are the most heavily tested code in the repo.
+- **One writer per venue, enforced.** Each scanner takes a `lib/singleton.mjs` port lock
+  before it opens the database. Two copies would double-write `opportunities` without
+  erroring anywhere, doubling the apparent opportunity rate that the Phase 2 gate is
+  decided on. A bound port rather than a pidfile: the kernel reclaims it however the
+  process dies, so a crash never leaves a stale lock blocking the next start.
+- **Silence is the failure mode to design against.** A scanner that stays connected, keeps
+  its counters climbing and records nothing looks healthy from the inside. Two guards:
+  `lib/contract.mjs` catches a renamed payload field (an **absent** key is drift; a key
+  present with a **null** value is ordinary data), and `scripts/watchdog.mjs` watches the
+  only trustworthy signal from outside — when a row last landed in the database.
 
 ---
 
@@ -129,6 +142,25 @@ a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set
 | `GPA_LOCK_PORT_POLYMARKET` | `43241` | 1024–65535 | Singleton lock, Polymarket scanner |
 | `GPA_LOCK_PORT_KALSHI` | `43242` | 1024–65535 | Singleton lock, Kalshi scanner |
 | `GPA_LOCK_PORT_LIMITLESS` | `43243` | 1024–65535 | Singleton lock, Limitless scanner |
+| `GPA_LOCK_PORT_WATCHDOG` | `43244` | 1024–65535 | Singleton lock, watchdog — it owns the retention sweep, so it is a writer too |
+| `GPA_WATCHDOG_INTERVAL_MS` | `60000` | ≥ 1000 | How often the watchdog checks every feed's clock |
+| `GPA_WATCHDOG_REPEAT_MS` | `1800000` | ≥ 0 | Before a **still-stale** feed is re-reported. **0 re-reports every check** — valid, and the fastest way to get the alert channel muted. |
+| `GPA_FEED_STALE_MS_POLYMARKET` | `600000` | ≥ 1 | Staleness threshold, Polymarket |
+| `GPA_FEED_STALE_MS_KALSHI` | `1800000` | ≥ 1 | Staleness threshold, Kalshi |
+| `GPA_FEED_STALE_MS_LIMITLESS` | `1800000` | ≥ 1 | Staleness threshold, Limitless |
+| `GPA_WATCH_VENUES` | *(auto)* | csv | Venues the watchdog monitors. Unset = whatever is already in the DB, so a venue nobody runs is not alerted on. Pin it when "kalshi should be running" is itself worth monitoring. |
+| `GPA_TELEGRAM_BOT_TOKEN` | *(unset)* | — | Alerting. **Read from `process.env` directly, never through `loadConfig`** — anything in the config object is one `console.log(cfg)` from a log file. |
+| `GPA_TELEGRAM_CHAT_ID` | *(unset)* | — | Alerting. Inert unless **both** halves are set; half-configured says so once at startup. |
+
+**`GPA_FEED_STALE_MS_*` must exceed `GPA_MISS_SAMPLE_MS`, and startup enforces it.** The
+coupling is invisible from either knob alone: a healthy but quiet feed writes nothing for
+one whole sampling period *by design*, so a threshold at or below that period alerts on
+normal operation until somebody mutes the channel.
+
+The thresholds differ **per venue** and must stay that way. Polymarket is a WebSocket
+firehose updating sub-second; Kalshi is a public REST crawl measured at 34–54s per pass.
+One shared number either cries wolf on Kalshi every few minutes or is far too slack to
+notice Polymarket dying.
 
 Note the deliberate asymmetry between `GPA_DEPTH_SAFETY_FACTOR` (0 invalid) and
 `GPA_DB_BUSY_TIMEOUT_MS` (0 valid). They look like the same "non-negative number" rule and
@@ -142,7 +174,7 @@ Ports claimed by this repo on this machine (registered in `~/code/bot_ports.txt`
 
 | What | Port |
 |---|---|
-| Singleton lock block | **43241–43249** (43241/2/3 wired, rest reserved) |
+| Singleton lock block | **43241–43249** (43241/2/3/4 wired, rest reserved) |
 | Dashboard | **4324** |
 
 Before claiming any new port anywhere on this machine: check `~/code/bot_ports.txt`
