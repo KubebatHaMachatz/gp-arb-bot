@@ -1,0 +1,16 @@
+{
+  "name": "gp-arb-bot",
+  "version": "0.0.1",
+  "description": "Guaranteed-profit complete-set arbitrage bot for prediction markets (Polymarket, Kalshi, Limitless).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "test": "node --no-warnings --test 'test/*.test.mjs'",
+    "test:watch": "node --no-warnings --test --watch 'test/*.test.mjs'",
+    "coverage": "node --no-warnings --experimental-test-coverage --test-coverage-include 'lib/**/*.mjs' --test 'test/*.test.mjs'",
+    "mutate": "npx --yes @stryker-mutator/core@9.6.1 run stryker.config.mjs"
+  }
+}
