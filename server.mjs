@@ -14,6 +14,7 @@
  */
 
 import { createServer } from 'node:http';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -26,7 +27,24 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const cfg = loadConfig();
 
 // Read-only: this process must never be able to write the measurement it is reporting.
-const db = openDb(cfg.db, { readOnly: true, busyTimeoutMs: cfg.dbBusyTimeoutMs });
+// A read-only open of a missing file fails by design, so the likely first-run mistake
+// (starting the dashboard before ever collecting) is turned into an instruction rather
+// than a raw SQLite error code.
+let db;
+try {
+  db = openDb(cfg.db, { readOnly: true, busyTimeoutMs: cfg.dbBusyTimeoutMs });
+} catch (err) {
+  if (!existsSync(cfg.db)) {
+    console.error(
+      `No database at ${cfg.db} yet.\n` +
+        'The dashboard reads what the scanner collects, so run the scanner first:\n' +
+        '  node scripts/scan_polymarket.mjs\n' +
+        'or point GPA_DB at an existing database.',
+    );
+    process.exit(1);
+  }
+  throw err;
+}
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);

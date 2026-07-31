@@ -300,6 +300,42 @@ test('categoryBreakdown joins legs to markets and reports the fee-free bucket ap
   });
 });
 
+test('categoryBreakdown honours the venue filter across the markets join', () => {
+  // Load-bearing and easy to miss: `markets` ALSO has a venue column, so an unqualified
+  // `WHERE venue = ?` in this three-table query is an ambiguous-column error. The filter
+  // must scope to the opportunity's venue, and must not match a market row from another
+  // venue that happens to share a token id.
+  withDb((db) => {
+    seedMarket(db, { tokenId: 'shared', category: 'politics', venue: 'polymarket' });
+    seedMarket(db, { tokenId: 'shared', category: 'crypto', venue: 'kalshi' });
+
+    seedOpp(db, { eventKey: 'p', ts: T0 + 1, netEdge: 0.02, venue: 'polymarket', legs: [{ tokenId: 'shared' }] });
+    seedOpp(db, { eventKey: 'k', ts: T0 + 2, netEdge: 0.02, venue: 'kalshi', legs: [{ tokenId: 'shared' }] });
+
+    const poly = categoryBreakdown(db, { venue: 'polymarket', minNetEdge: 0.005 });
+    assert.equal(poly.length, 1);
+    assert.equal(poly[0].category, 'politics', 'joined to the polymarket market, not kalshi');
+    assert.equal(poly[0].priced, 1);
+
+    const kalshi = categoryBreakdown(db, { venue: 'kalshi', minNetEdge: 0.005 });
+    assert.equal(kalshi[0].category, 'crypto');
+
+    // and unfiltered, both appear, each joined to its OWN venue's market row
+    const both = categoryBreakdown(db, { minNetEdge: 0.005 });
+    assert.deepEqual(both.map((r) => r.category).sort(), ['crypto', 'politics']);
+  });
+});
+
+test('categoryBreakdown honours the since window', () => {
+  withDb((db) => {
+    seedMarket(db, { tokenId: 't', category: 'politics' });
+    seedOpp(db, { eventKey: 'old', ts: T0 - HOUR, netEdge: 0.02, legs: [{ tokenId: 't' }] });
+    seedOpp(db, { eventKey: 'new', ts: T0 + 1, netEdge: 0.02, legs: [{ tokenId: 't' }] });
+    const rows = categoryBreakdown(db, { sinceMs: T0, minNetEdge: 0.005 });
+    assert.equal(rows[0].priced, 1, 'the hour-old set is excluded');
+  });
+});
+
 test('categoryBreakdown counts a set once, not once per leg', () => {
   // The join fans out over legs; a naive COUNT(*) would report a 2-leg set as two
   // observations and a 30-leg neg-risk set as thirty, silently weighting big groups.
@@ -343,6 +379,26 @@ test('capacityBinding separates a thin book from a bound notional cap', () => {
     assert.equal(b.notional, 1);
     assert.equal(b.unsized, 1, 'the skipped row had no capacity at all');
     closeTo(b.medianCapacityUsd, 20, 'median of 10, 20, 250');
+  });
+});
+
+test('capacityBinding averages the middle pair for an even count', () => {
+  withDb((db) => {
+    // sorted: 10, 20, 40, 250 -> median is (20 + 40) / 2 = 30
+    seedOpp(db, { eventKey: 'a', ts: T0 + 1, netEdge: 0.02, bindingLeg: '0', capacityUsd: 10 });
+    seedOpp(db, { eventKey: 'b', ts: T0 + 2, netEdge: 0.02, bindingLeg: '0', capacityUsd: 250 });
+    seedOpp(db, { eventKey: 'c', ts: T0 + 3, netEdge: 0.02, bindingLeg: '0', capacityUsd: 20 });
+    seedOpp(db, { eventKey: 'd', ts: T0 + 4, netEdge: 0.02, bindingLeg: '0', capacityUsd: 40 });
+    closeTo(capacityBinding(db, {}).medianCapacityUsd, 30, 'even-length median');
+  });
+});
+
+test('capacityBinding reports a null median when nothing was sized', () => {
+  withDb((db) => {
+    seedOpp(db, { eventKey: 'a', ts: T0 + 1, skipReason: 'stale_book' });
+    const b = capacityBinding(db, {});
+    assert.equal(b.medianCapacityUsd, null, 'a median of nothing is not 0');
+    assert.equal(b.unsized, 1);
   });
 });
 
