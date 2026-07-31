@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import { DatabaseSync } from 'node:sqlite';
 
-import { openDb, persistMarkets, retentionCutoffMs } from '../lib/db.mjs';
+import { openDb, persistMarkets, retentionCutoffMs, sweepOpportunities } from '../lib/db.mjs';
 
 /** Build a scratch directory. Helpers build INPUTS, never expected outputs. */
 function scratch() {
@@ -480,4 +480,109 @@ test('persistMarkets rejects an unusable timestamp', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── sweepOpportunities ──────────────────────────────────────────────────────
+
+const SWEEP_NOW = Date.UTC(2026, 6, 31, 12, 0, 0);
+const SWEEP_DAY = 86_400_000;
+
+function seedOpp(db, ts, { legs = 2 } = {}) {
+  const res = db
+    .prepare(
+      `INSERT INTO opportunities (venue, event_key, ts, kind, leg_count)
+       VALUES ('polymarket', ?, ?, 'binary', ?)`,
+    )
+    .run(`e-${ts}`, ts, legs);
+  const id = Number(res.lastInsertRowid);
+  for (let i = 0; i < legs; i += 1) {
+    db.prepare(
+      `INSERT INTO opportunity_legs (opportunity_id, token_id, outcome, price)
+       VALUES (?, ?, ?, ?)`,
+    ).run(id, `t-${ts}-${i}`, i === 0 ? 'Yes' : 'No', 0.5);
+  }
+  return id;
+}
+
+function withSweepDb(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'gp-arb-sweep-'));
+  const db = openDb(join(dir, 'a.db'));
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('sweepOpportunities deletes rows past the retention window and keeps the rest', () => {
+  withSweepDb((db) => {
+    seedOpp(db, SWEEP_NOW - 100 * SWEEP_DAY);
+    seedOpp(db, SWEEP_NOW - 91 * SWEEP_DAY);
+    seedOpp(db, SWEEP_NOW - 89 * SWEEP_DAY);
+    seedOpp(db, SWEEP_NOW - SWEEP_DAY);
+
+    const res = sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 90 });
+    assert.equal(res.deleted, 2);
+    assert.equal(res.cutoffMs, SWEEP_NOW - 90 * SWEEP_DAY);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM opportunities').get().n, 2);
+  });
+});
+
+test('sweeping a row takes its legs with it, leaving no orphans', () => {
+  // The cascade is armed by PRAGMA foreign_keys in openDb. If that pragma were ever
+  // dropped the legs would survive their parent silently, and the table would grow
+  // without bound while `opportunities` looked correctly trimmed.
+  withSweepDb((db) => {
+    seedOpp(db, SWEEP_NOW - 100 * SWEEP_DAY, { legs: 3 });
+    seedOpp(db, SWEEP_NOW - SWEEP_DAY, { legs: 2 });
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM opportunity_legs').get().n, 5);
+
+    sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 90 });
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM opportunity_legs').get().n, 2);
+    assert.equal(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM opportunity_legs l
+            WHERE NOT EXISTS (SELECT 1 FROM opportunities o WHERE o.id = l.opportunity_id)`,
+        )
+        .get().n,
+      0,
+    );
+  });
+});
+
+test('keepDays 0 disables the sweep instead of deleting everything', () => {
+  // The dangerous misreading: "keep zero days" as "delete all history". 0 means OFF, and
+  // a sweep that wiped the dataset on a mistyped knob would destroy the week of evidence
+  // the Phase 2 decision rests on.
+  withSweepDb((db) => {
+    seedOpp(db, SWEEP_NOW - 1000 * SWEEP_DAY);
+    const res = sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 0 });
+    assert.deepEqual(res, { deleted: 0, cutoffMs: null });
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM opportunities').get().n, 1);
+  });
+});
+
+test('a sweep with nothing to delete reports zero rather than failing', () => {
+  withSweepDb((db) => {
+    seedOpp(db, SWEEP_NOW - SWEEP_DAY);
+    assert.equal(sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 90 }).deleted, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM opportunities').get().n, 1);
+  });
+});
+
+test('a row exactly on the cutoff is kept — the boundary is strictly older-than', () => {
+  withSweepDb((db) => {
+    seedOpp(db, SWEEP_NOW - 90 * SWEEP_DAY);
+    assert.equal(sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 90 }).deleted, 0);
+  });
+});
+
+test('sweepOpportunities rejects a bad retention setting rather than sweeping wrongly', () => {
+  withSweepDb((db) => {
+    assert.throws(() => sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: -1 }), TypeError);
+    assert.throws(() => sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 1.5 }), TypeError);
+    assert.throws(() => sweepOpportunities(db, { nowMs: Number.NaN, keepDays: 90 }), TypeError);
+  });
 });

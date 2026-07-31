@@ -11,13 +11,16 @@
  * All logic lives in `lib/scanner_polymarket.mjs` and is unit-tested there; this file is
  * deliberately thin process wiring.
  *
- * NOT YET WIRED (arrives with its own item, and this script is not a 24/7 service until
- * then): the singleton lock port, the staleness watchdog, and Telegram alerting are A-10.
- * Running two copies of this concurrently would double-write `opportunities`.
+ * Two copies running at once would double-write `opportunities` — silently, since nothing
+ * errors — and double the apparent opportunity rate that the Phase 2 gate is decided on.
+ * The singleton lock below is what makes that impossible. Feed staleness and alerting are
+ * the watchdog's job, in `scripts/watchdog.mjs`.
  */
 
 import { loadConfig } from '../lib/config.mjs';
+import { createDriftDetector } from '../lib/contract.mjs';
 import { openDb, persistMarkets } from '../lib/db.mjs';
+import { acquireLock } from '../lib/singleton.mjs';
 import { NAME as VENUE, discoverMarkets, feeFnFor, groupIntoSets } from '../lib/adapters/polymarket.mjs';
 import {
   WS_URL,
@@ -44,9 +47,41 @@ const runSeconds = Number(flagValue('--seconds') ?? 0);
 const once = args.includes('--once');
 
 const cfg = loadConfig();
-const db = openDb(cfg.db);
-
 const log = (...parts) => console.log(new Date().toISOString(), ...parts);
+
+const lock = await acquireLock({
+  port: cfg.lockPorts.polymarket,
+  label: 'gp-arb-bot scan-polymarket',
+  hint: 'GPA_LOCK_PORT_POLYMARKET',
+}).catch((err) => {
+  log(err.message);
+  process.exit(1);
+});
+
+// busyTimeoutMs is passed explicitly: the watchdog's hourly retention sweep takes the
+// write lock, so an insert here can genuinely queue behind it, and letting openDb's
+// default stand would make GPA_DB_BUSY_TIMEOUT_MS a no-op on the one process it is for.
+const db = openDb(cfg.db, { busyTimeoutMs: cfg.dbBusyTimeoutMs });
+
+/**
+ * The payload fields this scanner cannot work without.
+ *
+ * Every one of them fails SILENTLY if the venue renames or drops it. A missing `asks`
+ * reads as an empty ladder, so the set has no ask, so it is skipped as incomplete — and
+ * the scanner keeps running, connected and healthy-looking, recording nothing. A missing
+ * `timestamp` is the same story via the freshness gate. That is the failure this detects;
+ * a `null` VALUE in any of them is ordinary data and is not drift.
+ */
+const bookDrift = createDriftDetector({
+  required: ['event_type', 'asset_id', 'bids', 'asks', 'timestamp'],
+  label: 'polymarket book frame',
+  onDrift: (r) => log('DRIFT:', r.message),
+});
+const priceChangeDrift = createDriftDetector({
+  required: ['event_type', 'price_changes', 'timestamp'],
+  label: 'polymarket price_change frame',
+  onDrift: (r) => log('DRIFT:', r.message),
+});
 
 const store = createBookStore();
 const policy = createPersistPolicy({ missSampleMs: cfg.missSampleMs });
@@ -107,11 +142,13 @@ await rediscover();
 
 if (once) {
   db.close();
+  await lock.release();
   process.exit(0);
 }
 if (sets.length === 0) {
   log('no complete sets to watch; exiting');
   db.close();
+  await lock.release();
   process.exit(0);
 }
 
@@ -185,7 +222,11 @@ function connect() {
     // Rescan ONLY the sets this batch touched. Rescanning everything re-evaluates sets
     // whose own books have not moved, which floods the table with stale-book skips.
     const touchedTokens = new Set();
+    const driftNow = Date.now();
     for (const msg of messages) {
+      if (msg?.event_type === 'book') bookDrift.check(msg, driftNow);
+      else if (msg?.event_type === 'price_change') priceChangeDrift.check(msg, driftNow);
+
       store.applyMessage(msg);
       for (const tokenId of tokensInMessage(msg)) touchedTokens.add(tokenId);
     }
@@ -236,11 +277,15 @@ const rediscovery = setInterval(async () => {
   }
 }, cfg.rediscoverMs);
 
-function shutdown(reason) {
+async function shutdown(reason) {
+  if (stopping) return;
   stopping = true;
+  // Both detectors, not just the book one: a price_change rename is just as silent, and
+  // reporting one counter would read as "no drift" while the other was firing.
+  const drifted = bookDrift.stats().drifted + priceChangeDrift.stats().drifted;
   log(
     `shutting down (${reason}); scans=${scanned} evaluated=${evaluated} ` +
-      `recorded=${recorded} clears=${cleared}`,
+      `recorded=${recorded} clears=${cleared} driftedFrames=${drifted}`,
   );
   clearInterval(keepalive);
   clearInterval(report);
@@ -251,6 +296,7 @@ function shutdown(reason) {
     // already closing
   }
   db.close();
+  await lock.release();
   process.exit(0);
 }
 

@@ -11,11 +11,15 @@
  * and the venue publishes no book-freshness field, so most sets will be gated out as
  * stale. That is the finding rather than a defect — see lib/scanner_kalshi.mjs.
  *
- * NOT YET WIRED (A-10): singleton lock, watchdog, alerting.
+ * Two copies running at once would double-write `opportunities` without erroring, and
+ * double the apparent opportunity rate the Phase 2 gate is decided on. The singleton lock
+ * below prevents that. Feed staleness and alerting live in `scripts/watchdog.mjs`.
  */
 
 import { loadConfig } from '../lib/config.mjs';
+import { createDriftDetector } from '../lib/contract.mjs';
 import { openDb, persistMarkets } from '../lib/db.mjs';
+import { acquireLock } from '../lib/singleton.mjs';
 import {
   NAME as VENUE,
   asksFromMarket,
@@ -35,9 +39,37 @@ const runSeconds = Number(flag('--seconds') ?? 0);
 const once = args.includes('--once');
 
 const cfg = loadConfig();
-const db = openDb(cfg.db);
-const policy = createPersistPolicy({ missSampleMs: cfg.missSampleMs });
 const log = (...p) => console.log(new Date().toISOString(), ...p);
+
+const lock = await acquireLock({
+  port: cfg.lockPorts.kalshi,
+  label: 'gp-arb-bot scan-kalshi',
+  hint: 'GPA_LOCK_PORT_KALSHI',
+}).catch((err) => {
+  log(err.message);
+  process.exit(1);
+});
+
+// busyTimeoutMs is passed explicitly: the watchdog's hourly retention sweep takes the
+// write lock, so an insert here can genuinely queue behind it, and letting openDb's
+// default stand would make GPA_DB_BUSY_TIMEOUT_MS a no-op on the one process it is for.
+const db = openDb(cfg.db, { busyTimeoutMs: cfg.dbBusyTimeoutMs });
+const policy = createPersistPolicy({ missSampleMs: cfg.missSampleMs });
+
+/**
+ * The event fields this crawl cannot work without.
+ *
+ * `markets` absent yields an empty array and therefore an event with no legs, which is
+ * dropped as an incomplete set -- so a rename here would zero the crawl while every log
+ * line still reported a successful pass. `mutually_exclusive` absent is read as `false`,
+ * which silently reclassifies every neg-risk group as unrelated binaries. Both are
+ * invisible without this check; a `null` VALUE in either is ordinary data.
+ */
+const eventDrift = createDriftDetector({
+  required: ['event_ticker', 'markets', 'mutually_exclusive'],
+  label: 'kalshi event payload',
+  onDrift: (r) => log('DRIFT:', r.message),
+});
 
 let stopping = false;
 let crawls = 0;
@@ -49,6 +81,7 @@ async function crawlAndScan() {
   const tops = new Map();
   const rows = await discoverMarkets({
     onEvent: (event) => {
+      eventDrift.check(event, Date.now());
       for (const [token, top] of topsFromEvent(event, asksFromMarket)) tops.set(token, top);
     },
   });
@@ -97,10 +130,15 @@ async function crawlAndScan() {
   );
 }
 
-function shutdown(reason) {
+async function shutdown(reason) {
+  if (stopping) return;
   stopping = true;
-  log(`shutting down (${reason}); crawls=${crawls} recorded=${recorded} clears=${cleared}`);
+  log(
+    `shutting down (${reason}); crawls=${crawls} recorded=${recorded} clears=${cleared} ` +
+      `driftedEvents=${eventDrift.stats().drifted}`,
+  );
   db.close();
+  await lock.release();
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
@@ -131,4 +169,4 @@ do {
   if (gap > 0) await new Promise((r) => setTimeout(r, gap));
 } while (!stopping);
 
-if (once) shutdown('--once');
+if (once) await shutdown('--once');

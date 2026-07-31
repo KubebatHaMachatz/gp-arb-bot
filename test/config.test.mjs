@@ -157,7 +157,13 @@ test('loadConfig on an empty env produces the documented defaults', () => {
   assert.equal(cfg.dbBusyTimeoutMs, 5000);
   assert.equal(cfg.bind, '127.0.0.1');
   assert.equal(cfg.port, 4324);
-  assert.deepEqual(cfg.lockPorts, { polymarket: 43241, kalshi: 43242, limitless: 43243 });
+  assert.deepEqual(cfg.lockPorts, {
+    polymarket: 43241,
+    kalshi: 43242,
+    limitless: 43243,
+    // The watchdog owns the retention sweep, so it writes too and needs a lock of its own.
+    watchdog: 43244,
+  });
 });
 
 test('DEFAULTS is exported and agrees with what loadConfig({}) produces', () => {
@@ -176,6 +182,9 @@ test('DEFAULTS is exported and agrees with what loadConfig({}) produces', () => 
   assert.equal(DEFAULTS.GPA_LOCK_PORT_POLYMARKET, 43241);
   assert.equal(DEFAULTS.GPA_LOCK_PORT_KALSHI, 43242);
   assert.equal(DEFAULTS.GPA_LOCK_PORT_LIMITLESS, 43243);
+  assert.equal(DEFAULTS.GPA_LOCK_PORT_WATCHDOG, 43244);
+  assert.equal(DEFAULTS.GPA_WATCHDOG_INTERVAL_MS, 60000);
+  assert.equal(DEFAULTS.GPA_WATCHDOG_REPEAT_MS, 1800000);
   assert.equal(Object.isFrozen(DEFAULTS), true);
 });
 
@@ -205,6 +214,9 @@ test('loadConfig reads every knob from the env it is handed', () => {
     GPA_LOCK_PORT_POLYMARKET: '43001',
     GPA_LOCK_PORT_KALSHI: '43002',
     GPA_LOCK_PORT_LIMITLESS: '43003',
+    GPA_LOCK_PORT_WATCHDOG: '43004',
+    GPA_WATCHDOG_INTERVAL_MS: '15000',
+    GPA_WATCHDOG_REPEAT_MS: '600000',
   });
   assert.equal(cfg.db, '/tmp/x.db');
   assert.equal(cfg.bookStaleMs, 250);
@@ -215,7 +227,14 @@ test('loadConfig reads every knob from the env it is handed', () => {
   assert.equal(cfg.dbBusyTimeoutMs, 30000);
   assert.equal(cfg.bind, '0.0.0.0');
   assert.equal(cfg.port, 8080);
-  assert.deepEqual(cfg.lockPorts, { polymarket: 43001, kalshi: 43002, limitless: 43003 });
+  assert.deepEqual(cfg.lockPorts, {
+    polymarket: 43001,
+    kalshi: 43002,
+    limitless: 43003,
+    watchdog: 43004,
+  });
+  assert.equal(cfg.watchdogIntervalMs, 15000);
+  assert.equal(cfg.watchdogRepeatMs, 600000);
 });
 
 test('loadConfig ignores env vars it does not own', () => {
@@ -352,4 +371,67 @@ test('loadConfig defaults to process.env when called with no argument', () => {
     if (saved === undefined) delete process.env.GPA_PORT;
     else process.env.GPA_PORT = saved;
   }
+});
+
+// ── watchdog and feed-staleness knobs ───────────────────────────────────────
+
+test('the feed-staleness thresholds default per venue, not to one shared number', () => {
+  const cfg = loadConfig({});
+  assert.equal(cfg.feedStaleMs.polymarket, DEFAULTS.GPA_FEED_STALE_MS_POLYMARKET);
+  assert.equal(cfg.feedStaleMs.kalshi, DEFAULTS.GPA_FEED_STALE_MS_KALSHI);
+  assert.notEqual(cfg.feedStaleMs.polymarket, cfg.feedStaleMs.kalshi);
+  assert.equal(Object.isFrozen(cfg.feedStaleMs), true);
+});
+
+test('each feed threshold is overridable on its own', () => {
+  const cfg = loadConfig({ GPA_FEED_STALE_MS_KALSHI: '2400000' });
+  assert.equal(cfg.feedStaleMs.kalshi, 2_400_000);
+  assert.equal(cfg.feedStaleMs.polymarket, DEFAULTS.GPA_FEED_STALE_MS_POLYMARKET);
+});
+
+test('a staleness threshold at or below the sampling period is a startup crash', () => {
+  // The two knobs are coupled and neither is suspicious alone. Left to run, this
+  // combination alerts on a perfectly healthy feed every few minutes until it is muted.
+  assert.throws(
+    () => loadConfig({ GPA_FEED_STALE_MS_POLYMARKET: '60000' }),
+    (err) => {
+      assert.match(err.message, /polymarket/);
+      assert.match(err.message, /GPA_MISS_SAMPLE_MS/);
+      return true;
+    },
+  );
+  assert.throws(() => loadConfig({ GPA_MISS_SAMPLE_MS: '3600000' }), /GPA_MISS_SAMPLE_MS/);
+});
+
+test('raising the sampling period is fine when the thresholds are raised with it', () => {
+  const cfg = loadConfig({
+    GPA_MISS_SAMPLE_MS: '3600000',
+    GPA_FEED_STALE_MS_POLYMARKET: '7200000',
+    GPA_FEED_STALE_MS_KALSHI: '7200000',
+    GPA_FEED_STALE_MS_LIMITLESS: '7200000',
+  });
+  assert.equal(cfg.missSampleMs, 3_600_000);
+  assert.equal(cfg.feedStaleMs.polymarket, 7_200_000);
+});
+
+test('sampling disabled with 0 imposes no floor on the thresholds', () => {
+  const cfg = loadConfig({ GPA_MISS_SAMPLE_MS: '0', GPA_FEED_STALE_MS_POLYMARKET: '1000' });
+  assert.equal(cfg.feedStaleMs.polymarket, 1000);
+});
+
+test('a zero feed-staleness threshold is rejected — it would declare every feed dead', () => {
+  assert.throws(() => loadConfig({ GPA_FEED_STALE_MS_KALSHI: '0' }), /GPA_FEED_STALE_MS_KALSHI/);
+});
+
+test('the watchdog interval is floored well above zero', () => {
+  assert.equal(loadConfig({}).watchdogIntervalMs, DEFAULTS.GPA_WATCHDOG_INTERVAL_MS);
+  assert.equal(loadConfig({ GPA_WATCHDOG_INTERVAL_MS: '30000' }).watchdogIntervalMs, 30_000);
+  assert.throws(() => loadConfig({ GPA_WATCHDOG_INTERVAL_MS: '10' }), /GPA_WATCHDOG_INTERVAL_MS/);
+});
+
+test('the watchdog repeat interval accepts 0, which re-reports on every check', () => {
+  // Valid but hostile, exactly like GPA_MISS_SAMPLE_MS=0. Accepted because it is a
+  // coherent request; documented because it is rarely what anyone wants.
+  assert.equal(loadConfig({ GPA_WATCHDOG_REPEAT_MS: '0' }).watchdogRepeatMs, 0);
+  assert.throws(() => loadConfig({ GPA_WATCHDOG_REPEAT_MS: '-1' }), /GPA_WATCHDOG_REPEAT_MS/);
 });
