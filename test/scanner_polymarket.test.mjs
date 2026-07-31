@@ -21,6 +21,7 @@ import {
   tokensForSets,
   tokensInMessage,
 } from '../lib/scanner_polymarket.mjs';
+import { feeFnFor } from '../lib/adapters/polymarket.mjs';
 
 const EPS = 1e-12;
 const closeTo = (a, e, m) =>
@@ -327,8 +328,7 @@ test('scanSets prices a complete set from live book state', () => {
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
 
-  const rows = scanSets({
-    sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+  const rows = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
     store,
     cfg: CFG,
     nowMs: 1_000_500,
@@ -365,8 +365,7 @@ test('scanSets BUYS, so it must price the ASK side and never the bid', () => {
     }),
   );
 
-  const [row] = scanSets({
-    sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+  const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
     store,
     cfg: CFG,
     nowMs: 1_000_100,
@@ -383,8 +382,7 @@ test('scanSets records a sub-threshold set rather than discarding it', () => {
   const store = createBookStore();
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.60', size: '10' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg(NO, { asks: [{ price: '0.55', size: '10' }], ts: 1_000_000 }));
-  const [row] = scanSets({
-    sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+  const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
     store,
     cfg: CFG,
     nowMs: 1_000_100,
@@ -397,8 +395,7 @@ test('scanSets applies the freshness gate through detectOpportunity', () => {
   const store = createBookStore();
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
-  const [row] = scanSets({
-    sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+  const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
     store,
     cfg: CFG,
     nowMs: 1_002_000, // 2s old, past the 750ms gate
@@ -413,8 +410,7 @@ test('scanSets skips a set whose legs are not all quoted yet', () => {
   // would compare a partial cost against a $1 payout requiring every outcome.
   const store = createBookStore();
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
-  const rows = scanSets({
-    sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+  const rows = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
     store,
     cfg: CFG,
     nowMs: 1_000_100,
@@ -427,7 +423,7 @@ test('scanSets skips a leg quoted with no ASK at all', () => {
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg(NO, { bids: [{ price: '0.40', size: '600' }], ts: 1_000_000 }));
   assert.deepEqual(
-    scanSets({ sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]), store, cfg: CFG, nowMs: 1_000_100 }),
+    scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]), store, cfg: CFG, nowMs: 1_000_100 }),
     [],
   );
 });
@@ -437,8 +433,7 @@ test('scanSets prices a three-leg neg-risk set', () => {
   store.applyMessage(bookMsg('a', { asks: [{ price: '0.50', size: '100' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg('b', { asks: [{ price: '0.30', size: '100' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg('c', { asks: [{ price: '0.15', size: '100' }], ts: 1_000_000 }));
-  const [row] = scanSets({
-    sets: [
+  const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: [
       {
         eventKey: 'grp',
         kind: 'neg_risk',
@@ -461,8 +456,7 @@ test('scanSets carries the per-leg detail needed to persist the set', () => {
   const store = createBookStore();
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
-  const [row] = scanSets({
-    sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+  const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
     store,
     cfg: CFG,
     nowMs: 1_000_100,
@@ -481,8 +475,7 @@ test('scanSets surfaces an unmapped category as a throw, never a zero fee', () =
   store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
   assert.throws(
     () =>
-      scanSets({
-        sets: binarySet([{ ...leg(YES, 'Yes'), category: null }, leg(NO, 'No')]),
+      scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([{ ...leg(YES, 'Yes'), category: null }, leg(NO, 'No')]),
         store,
         cfg: CFG,
         nowMs: 1_000_100,
@@ -500,8 +493,7 @@ test('persistOpportunity round-trips a set into the real schema', () => {
     const store = createBookStore();
     store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
     store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
-    const [row] = scanSets({
-      sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+    const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
       store,
       cfg: CFG,
       nowMs: 1_000_100,
@@ -540,8 +532,7 @@ test('persistOpportunity stores a skipped set with its reason and no edge number
     const store = createBookStore();
     store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
     store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
-    const [row] = scanSets({
-      sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
+    const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]),
       store,
       cfg: CFG,
       nowMs: 1_005_000,
@@ -633,7 +624,7 @@ test('an adapter-produced set prices end to end from a real book frame', () => {
   const store = createBookStore();
   store.applyMessage(bookMsg(YES, { asks: [{ price: '0.50', size: '400' }], ts: 1_000_000 }));
   store.applyMessage(bookMsg(NO, { asks: [{ price: '0.45', size: '600' }], ts: 1_000_000 }));
-  const [row] = scanSets({ sets, store, cfg: CFG, nowMs: 1_000_100 });
+  const [row] = scanSets({ venue: 'polymarket', feeFnFor, sets, store, cfg: CFG, nowMs: 1_000_100 });
   closeTo(row.netEdge, 0.0301, 'netEdge from adapter rows');
 });
 
@@ -819,7 +810,7 @@ test('the store can be CLEARED, so a reconnect cannot leave phantom liquidity', 
   assert.deepEqual(store.tokens(), []);
   // and a set over those tokens is skipped rather than priced off the phantom book
   assert.deepEqual(
-    scanSets({ sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]), store, cfg: CFG, nowMs: 1100 }),
+    scanSets({ venue: 'polymarket', feeFnFor, sets: binarySet([leg(YES, 'Yes'), leg(NO, 'No')]), store, cfg: CFG, nowMs: 1100 }),
     [],
   );
 });

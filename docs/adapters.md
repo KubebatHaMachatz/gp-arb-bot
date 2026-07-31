@@ -33,7 +33,7 @@ is written.
 | Venue | Discovery | Book | Economics | Complete-set mechanics | Auth (reads) | Adapter |
 |---|---|---|---|---|---|---|
 | **Polymarket** | ✅ | ✅ | ✅ via `feeType` | ✅ grouping | ✅ none needed | ✅ A-5 |
-| **Kalshi** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-8) |
+| **Kalshi** | ✅ | ✅ | ✅ single rate | ✅ grouping | ✅ none needed | ✅ A-8 — but see the ⚠️ |
 | **Limitless** | ❓ | ❓ | ✅ fees | ❓ | ❓ | not started (A-9) |
 
 No adapter code exists yet. Each row is filled in by its own verify-first spike, logged
@@ -236,6 +236,81 @@ redeemed.
 Every read used above — Gamma events, CLOB `/markets/{conditionId}`,
 `/sampling-markets` — returned HTTP 200 with **no credentials**. Nothing on the read path
 needs auth, as assumed.
+
+## Kalshi — read-path spike, 2026-07-31 (A-8)
+
+Live against the public endpoints, no auth. Everything needed is verified — **and the
+verdict on the venue is negative for this strategy on the public path.**
+
+### ✅ Set grouping — an explicit flag, unlike Polymarket
+
+`mutually_exclusive: true` on the **event** is the set marker, and the event nests every
+member market (`?with_nested_markets=true`), so a group arrives whole and completeness is
+structural. 9 of 20 events in the first page were mutually exclusive; non-exclusive
+events carry exactly one market and are plain binaries.
+
+### ✅ The order book is BIDS-ONLY on both sides
+
+`orderbook_fp.yes_dollars` = YES bids, `no_dollars` = NO bids. There are **no ask
+queues**. An ask exists only as the mirror of the opposite side's bid:
+
+```
+YES ask = 1 − (best NO bid),   size = that NO bid's size
+NO  ask = 1 − (best YES bid),  size = that YES bid's size
+```
+
+The **size** half is what is easy to get backwards, and getting it backwards prices each
+leg correctly while sizing it against the wrong queue. Verified live on
+`KXNEWPOPE-70-PPIZ`: best NO bid `0.954 × 1307` and best YES bid `0.040 × 70`; the venue
+independently reported `yes_ask 0.0460 / yes_ask_size_fp 1307` and
+`no_ask 0.9600 / yes_bid_size_fp 70`. Both ladders **ascend**, so the best is last — the
+same trap as Polymarket, handled the same way by scanning for the extreme.
+
+**An empty bid queue mirrors to an ask of exactly 1.00**, which is the absence of an
+offer rather than an offer. Found live: it reached the pricing core as a degenerate leg
+and threw mid-crawl. Asks outside `(0, 1)` are now treated as no offer.
+
+### ✅ Economics — one rate, no category, no rebate
+
+`0.07 · p · (1−p)`, side-independent. No maker rebate exists anywhere in the schedule, so
+unlike Polymarket there is no category to resolve and nothing that can fail to map.
+
+❓ A few series carry `fee_multiplier: 0` and are genuinely free, but that field lives on
+the **series** object, not the event or market. Unresolved here; pricing those at the
+standard rate **overstates** their cost, which only costs a missed opportunity.
+
+### ⚠️ Discovery is rate-limited, and must be throttled
+
+Paging without a delay returns **HTTP 429 on the second page** — an unthrottled crawl
+does not run slowly, it fails outright. Discovery spaces pages by 300ms and retries a 429
+with backoff. Pagination is by opaque `cursor`, and a repeated cursor terminates the
+crawl (a server echoing one would otherwise page to the limit, multiplying every row).
+
+### ⚠️ VERDICT — the public REST path cannot support this strategy
+
+| | Polymarket | Kalshi |
+|---|---|---|
+| transport | public WebSocket, pushed | REST crawl (WS needs auth **to connect**) |
+| full universe | 3,630 sets | **75,817 sets** |
+| time to refresh all | sub-second per update | **~34–54 s per crawl** |
+| venue book timestamp | yes, per message | **none** — `updated_time` is the record's mtime, observed a month old |
+| sets gated stale | ~3% | **99.8%** (47,816 of 47,931) |
+
+Measured on a real crawl. Rows are stamped with **their own page's** fetch time rather
+than the crawl's end, because a row from page 1 really is that stale by the time page 40
+lands — that is the only honest age available, and it is what lets the gate do its job
+instead of reading ~0 for everything.
+
+The consequence is not a bug to tune away: on a 34-second-old book those sets genuinely
+are stale. **The single set that cleared had a capacity of $0.40** — a thin-book artifact,
+and a good illustration of why depth-aware sizing is not optional.
+
+Two practical implications:
+
+1. Trading Kalshi on this strategy would need the **authenticated WebSocket**, which is
+   out of scope for a read-only measurement phase.
+2. Running this scanner continuously is not recommended: 75,817 sets means a crawl writes
+   tens of thousands of rows per sampling window. Use `--once` for a point-in-time read.
 
 ## Leads to verify (NOT yet facts)
 

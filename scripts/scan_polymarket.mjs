@@ -18,7 +18,7 @@
 
 import { loadConfig } from '../lib/config.mjs';
 import { openDb, persistMarkets } from '../lib/db.mjs';
-import { discoverMarkets, groupIntoSets } from '../lib/adapters/polymarket.mjs';
+import { NAME as VENUE, discoverMarkets, feeFnFor, groupIntoSets } from '../lib/adapters/polymarket.mjs';
 import {
   WS_URL,
   buildSubscribe,
@@ -128,7 +128,7 @@ function scanAndRecord(touchedSets) {
   const t0 = Date.now();
   let batch;
   try {
-    batch = scanSets({ sets: touchedSets, store, cfg, nowMs: Date.now() });
+    batch = scanSets({ venue: VENUE, feeFnFor, sets: touchedSets, store, cfg, nowMs: Date.now() });
   } catch (err) {
     // An unmapped fee category throws by design. Log and keep measuring rather than
     // taking the whole scanner down.
