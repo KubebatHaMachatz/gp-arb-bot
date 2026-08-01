@@ -150,6 +150,7 @@ test('loadConfig on an empty env produces the documented defaults', () => {
   const cfg = loadConfig({});
   assert.equal(cfg.db, 'data/arb.db');
   assert.equal(cfg.bookStaleMs, 750);
+  assert.equal(cfg.clockSkewToleranceMs, 5000);
   assert.equal(cfg.minNetEdge, 0.005);
   assert.equal(cfg.maxSetSizeUsd, 250);
   assert.equal(cfg.depthSafetyFactor, 0.5);
@@ -170,6 +171,7 @@ test('DEFAULTS is exported and agrees with what loadConfig({}) produces', () => 
   // DEFAULTS documents the same literals the assertions above hand-check.
   assert.equal(DEFAULTS.GPA_DB, 'data/arb.db');
   assert.equal(DEFAULTS.GPA_BOOK_STALE_MS, 750);
+  assert.equal(DEFAULTS.GPA_CLOCK_SKEW_TOLERANCE_MS, 5000);
   assert.equal(DEFAULTS.GPA_MIN_NET_EDGE, 0.005);
   assert.equal(DEFAULTS.GPA_MAX_SET_SIZE_USD, 250);
   assert.equal(DEFAULTS.GPA_DEPTH_SAFETY_FACTOR, 0.5);
@@ -204,6 +206,7 @@ test('loadConfig reads every knob from the env it is handed', () => {
   const cfg = loadConfig({
     GPA_DB: '/tmp/x.db',
     GPA_BOOK_STALE_MS: '250',
+    GPA_CLOCK_SKEW_TOLERANCE_MS: '2500',
     GPA_MIN_NET_EDGE: '0.02',
     GPA_MAX_SET_SIZE_USD: '1000',
     GPA_DEPTH_SAFETY_FACTOR: '0.25',
@@ -220,6 +223,7 @@ test('loadConfig reads every knob from the env it is handed', () => {
   });
   assert.equal(cfg.db, '/tmp/x.db');
   assert.equal(cfg.bookStaleMs, 250);
+  assert.equal(cfg.clockSkewToleranceMs, 2500);
   assert.equal(cfg.minNetEdge, 0.02);
   assert.equal(cfg.maxSetSizeUsd, 1000);
   assert.equal(cfg.depthSafetyFactor, 0.25);
@@ -294,6 +298,40 @@ test('GPA_BOOK_STALE_MS is capped — a huge value is no gate at all, not a leni
   assert.throws(
     () => loadConfig({ GPA_BOOK_STALE_MS: '999999999' }),
     /GPA_BOOK_STALE_MS must be <= 60000, got 999999999/,
+  );
+});
+
+test('GPA_CLOCK_SKEW_TOLERANCE_MS defaults to a generous multiple of the measured skew', () => {
+  // Live Polymarket data measured the venue's own timestamp running up to 190ms ahead of
+  // this process's clock (median -69ms across 136k samples) -- ordinary jitter, not
+  // staleness. The default must clear that comfortably without being so large it stops
+  // catching a genuine anomaly (an NTP glitch, a corrupted timestamp).
+  assert.equal(loadConfig({}).clockSkewToleranceMs, DEFAULTS.GPA_CLOCK_SKEW_TOLERANCE_MS);
+  assert.ok(DEFAULTS.GPA_CLOCK_SKEW_TOLERANCE_MS >= 1000, 'must clear ~190ms of observed jitter');
+});
+
+test('GPA_CLOCK_SKEW_TOLERANCE_MS accepts 0 — zero tolerance for any future timestamp', () => {
+  // Valid, if strict: analogous to GPA_DB_BUSY_TIMEOUT_MS=0 being SQLite's well-defined
+  // "never wait" mode rather than "disabled".
+  assert.equal(loadConfig({ GPA_CLOCK_SKEW_TOLERANCE_MS: '0' }).clockSkewToleranceMs, 0);
+});
+
+test('GPA_CLOCK_SKEW_TOLERANCE_MS rejects a negative value', () => {
+  assert.throws(
+    () => loadConfig({ GPA_CLOCK_SKEW_TOLERANCE_MS: '-1' }),
+    /GPA_CLOCK_SKEW_TOLERANCE_MS must be >= 0, got -1/,
+  );
+});
+
+test('GPA_CLOCK_SKEW_TOLERANCE_MS is capped — an unbounded value reopens the fail-open hole it closes', () => {
+  // The whole point of this knob is that a one-sided freshness check can never be
+  // tripped by a negative age, however large -- so a huge tolerance is not "lenient", it
+  // is the same silent disarming GPA_BOOK_STALE_MS's own cap exists to prevent, just on
+  // the other side of zero.
+  assert.equal(loadConfig({ GPA_CLOCK_SKEW_TOLERANCE_MS: '60000' }).clockSkewToleranceMs, 60000);
+  assert.throws(
+    () => loadConfig({ GPA_CLOCK_SKEW_TOLERANCE_MS: '60001' }),
+    /GPA_CLOCK_SKEW_TOLERANCE_MS must be <= 60000, got 60001/,
   );
 });
 
