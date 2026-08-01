@@ -39,6 +39,20 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = homedir();
 const LOG_DIR = join(REPO, 'logs');
 
+/**
+ * Optional secrets/config file, loaded by Node itself.
+ *
+ * `--env-file-if-exists` rather than `--env-file`: the services must start on a machine
+ * that has no .env at all, which is the normal state until somebody configures alerting.
+ * `--env-file` treats a missing file as fatal, which would turn "alerting not set up yet"
+ * into three LaunchAgents crash-looping.
+ *
+ * This is the ONLY supported home for GPA_TELEGRAM_BOT_TOKEN. It cannot go in the plist
+ * (644, world-readable, and `assertNoSecrets` refuses it) and it should not go in
+ * `launchctl setenv`, which publishes it to every process in the GUI session.
+ */
+const ENV_FILE = join(REPO, '.env');
+
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 
@@ -142,7 +156,7 @@ for (const svc of selected) {
   const path = plistPath(label, HOME);
   const xml = plistFor({
     label,
-    programArguments: [NODE, join(REPO, svc.script)],
+    programArguments: [NODE, `--env-file-if-exists=${ENV_FILE}`, join(REPO, svc.script)],
     workingDirectory: REPO,
     stdoutPath: join(LOG_DIR, `${svc.name}.log`),
     stderrPath: join(LOG_DIR, `${svc.name}.err`),

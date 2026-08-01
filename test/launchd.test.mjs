@@ -374,3 +374,38 @@ test('every service script exists in the repo', async () => {
     assert.equal(existsSync(join(repo, s.script)), true, `${s.name} -> ${s.script}`);
   }
 });
+
+// ── flags alongside absolute paths in ProgramArguments ─────────────────────
+
+test('a flag carrying an absolute path is accepted', () => {
+  // `--env-file-if-exists=/abs/.env` holds its path INSIDE the token, so a naive
+  // startsWith('/') check on every argument would reject a perfectly valid invocation.
+  const xml = plistFor({
+    ...BASE,
+    programArguments: [
+      '/usr/local/bin/node',
+      '--env-file-if-exists=/repo/.env',
+      '/repo/scripts/scan_polymarket.mjs',
+    ],
+  });
+  assert.match(xml, /<string>--env-file-if-exists=\/repo\/\.env<\/string>/);
+  assert.match(xml, /<string>\/repo\/scripts\/scan_polymarket\.mjs<\/string>/);
+});
+
+test('a NON-flag argument after a flag must still be absolute', () => {
+  // Exempting flags must not become exempting everything: a relative script path is
+  // still a service that starts, fails to find its target, and dies in a KeepAlive loop.
+  assert.throws(
+    () =>
+      plistFor({
+        ...BASE,
+        programArguments: ['/usr/local/bin/node', '--env-file-if-exists=/repo/.env', 'scripts/x.mjs'],
+      }),
+    /absolute/,
+  );
+});
+
+test('the executable itself is never exempt, even spelled like a flag', () => {
+  assert.throws(() => plistFor({ ...BASE, programArguments: ['node', '/repo/x.mjs'] }), /absolute/);
+  assert.throws(() => plistFor({ ...BASE, programArguments: ['--weird', '/repo/x.mjs'] }), /absolute/);
+});
