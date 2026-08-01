@@ -206,3 +206,37 @@ test('an unreadable response body still yields a reported failure', async () => 
   assert.equal(await n.send('hi'), false);
   assert.match(rec.lines[0], /500/);
 });
+
+// ── the endpoint override must never be silent ─────────────────────────────
+
+test('a non-default API base is warned about, because the token is in that URL', () => {
+  // Whoever sets apiBase decides where the credential goes. A stale override would ship
+  // the token to an arbitrary host while alerting still looked healthy — a stub replying
+  // {"ok":true} is indistinguishable from Telegram accepting the message.
+  const rec = recorder();
+  createNotifier({
+    botToken: TOKEN,
+    chatId: CHAT,
+    fetchImpl: async () => ok(),
+    log: rec.log,
+    apiBase: 'http://127.0.0.1:43299',
+  });
+  assert.equal(rec.lines.length, 1);
+  assert.match(rec.lines[0], /WARNING/);
+  assert.match(rec.lines[0], /127\.0\.0\.1:43299/);
+  assert.match(rec.lines[0], /GPA_TELEGRAM_API_BASE/);
+  assert.doesNotMatch(rec.lines[0], /AAHfake/, 'and the warning never quotes the token');
+});
+
+test('the default endpoint warns about nothing', () => {
+  const rec = recorder();
+  const n = createNotifier({ botToken: TOKEN, chatId: CHAT, fetchImpl: async () => ok(), log: rec.log });
+  assert.equal(n.enabled, true);
+  assert.deepEqual(rec.lines, []);
+});
+
+test('an inert notifier does not warn about an endpoint it will never use', () => {
+  const rec = recorder();
+  createNotifier({ fetchImpl: async () => ok(), log: rec.log, apiBase: 'http://elsewhere' });
+  assert.deepEqual(rec.lines, []);
+});
