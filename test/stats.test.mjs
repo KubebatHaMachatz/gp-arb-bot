@@ -205,6 +205,30 @@ test('summarize honours the since window and the venue filter', () => {
   });
 });
 
+test('summarize gates neg_risk out of the clear count, pending a real exhaustiveness check', () => {
+  // Polymarket's negRisk flag plus a matching leg count is not proof the outcomes are
+  // exhaustive. A 9-leg "Eurozone inflation" event was found live with bands that do
+  // not tile the real number line -- 1.9 appears in two bands, 1.6 and 2.2-2.3 in none
+  // -- so a "complete" set built from it can redeem for $0, not $1. Until there is a
+  // real check for this, a neg_risk row is still PRICED (it has a real, storable
+  // net_edge) but must never count as a CLEAR, which is a claim of genuine redeemable
+  // arbitrage.
+  withDb((db) => {
+    seedOpp(db, { eventKey: 'a', ts: T0 + 1, netEdge: 0.02, capacityUsd: 100 }); // binary, clears
+    seedOpp(db, {
+      eventKey: 'b', ts: T0 + 2, kind: 'neg_risk', legCount: 9, netEdge: 0.2064, capacityUsd: 3.54,
+    }); // priced, would clear on netEdge alone, but must not count
+
+    const s = summarize(db, { minNetEdge: 0.005 });
+    assert.equal(s.total, 2);
+    assert.equal(s.priced, 2, 'both are priced -- neg_risk is not hidden, only untrusted as a clear');
+    assert.equal(s.clears, 1, 'only the binary set counts');
+    closeTo(s.clearRate, 1 / 2, 'clearRate');
+    closeTo(s.bestNetEdge, 0.02, 'bestNetEdge must not be dominated by an untrusted neg_risk figure');
+    closeTo(s.clearingCapacityUsd, 100, 'the neg_risk capacity is not deployable capital by this claim');
+  });
+});
+
 test('summarize requires a usable minNetEdge — the floor decides what counts as a clear', () => {
   withDb((db) => {
     for (const bad of [0, -0.1, 1.5, Number.NaN, '0.005', undefined]) {
@@ -260,6 +284,15 @@ test('densityByHour groups by UTC hour and separates clears from priced', () => 
     assert.equal(rows[0].clears, 1);
     assert.equal(rows[1].hourMs, T0 + HOUR);
     assert.equal(rows[1].clears, 1);
+  });
+});
+
+test('densityByHour gates neg_risk out of the per-hour clear count too', () => {
+  withDb((db) => {
+    seedOpp(db, { eventKey: 'a', ts: T0 + 60_000, kind: 'neg_risk', legCount: 6, netEdge: 0.2064 });
+    const rows = densityByHour(db, { minNetEdge: 0.005 });
+    assert.equal(rows[0].priced, 1);
+    assert.equal(rows[0].clears, 0, 'a clearing-looking edge on a neg_risk set is not a clear');
   });
 });
 
@@ -339,6 +372,9 @@ test('categoryBreakdown honours the since window', () => {
 test('categoryBreakdown counts a set once, not once per leg', () => {
   // The join fans out over legs; a naive COUNT(*) would report a 2-leg set as two
   // observations and a 30-leg neg-risk set as thirty, silently weighting big groups.
+  // A multi-leg neg_risk fixture is exactly where that de-dup bug would show up, so it
+  // stays here even though neg_risk itself is gated out of `clears` (see the dedicated
+  // test below) -- `priced` still has to fan out correctly.
   withDb((db) => {
     seedMarket(db, { tokenId: 'a', category: 'politics' });
     seedMarket(db, { tokenId: 'b', category: 'politics' });
@@ -349,7 +385,26 @@ test('categoryBreakdown counts a set once, not once per leg', () => {
     });
     const [row] = categoryBreakdown(db, { minNetEdge: 0.005 });
     assert.equal(row.priced, 1, 'one set, not three');
+    assert.equal(row.clears, 0, 'neg_risk is gated out of the clear count');
+  });
+});
+
+test('categoryBreakdown gates neg_risk out of clears, bestNetEdge and clearing capacity', () => {
+  withDb((db) => {
+    seedMarket(db, { tokenId: 't1', category: 'politics' });
+    seedMarket(db, { tokenId: 't2', category: 'politics' });
+    seedOpp(db, {
+      eventKey: 'a', ts: T0 + 1, netEdge: 0.02, capacityUsd: 100, legs: [{ tokenId: 't1' }],
+    });
+    seedOpp(db, {
+      eventKey: 'b', ts: T0 + 2, kind: 'neg_risk', legCount: 9, netEdge: 0.2064, capacityUsd: 3.54,
+      legs: [{ tokenId: 't2' }],
+    });
+    const [row] = categoryBreakdown(db, { minNetEdge: 0.005 });
+    assert.equal(row.priced, 2);
     assert.equal(row.clears, 1);
+    closeTo(row.bestNetEdge, 0.02, 'not the untrusted neg_risk figure');
+    closeTo(row.clearingCapacityUsd, 100);
   });
 });
 
@@ -415,6 +470,17 @@ test('recentClears returns the newest clearing sets, newest first', () => {
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((r) => r.eventKey), ['new', 'mid']);
     closeTo(rows[0].netEdge, 0.04, 'netEdge');
+  });
+});
+
+test('recentClears never lists a neg_risk set, however large its net_edge', () => {
+  withDb((db) => {
+    seedOpp(db, { eventKey: 'binary', ts: T0 + 1, netEdge: 0.02, capacityUsd: 10 });
+    seedOpp(db, {
+      eventKey: 'neg', ts: T0 + 2, kind: 'neg_risk', legCount: 6, netEdge: 0.2064, capacityUsd: 3.54,
+    });
+    const rows = recentClears(db, { minNetEdge: 0.005, limit: 10 });
+    assert.deepEqual(rows.map((r) => r.eventKey), ['binary']);
   });
 });
 

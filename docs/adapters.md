@@ -32,7 +32,7 @@ is written.
 
 | Venue | Discovery | Book | Economics | Complete-set mechanics | Auth (reads) | Adapter |
 |---|---|---|---|---|---|---|
-| **Polymarket** | ✅ | ✅ | ✅ via `feeType` | ✅ grouping | ✅ none needed | ✅ A-5 |
+| **Polymarket** | ✅ | ✅ | ✅ via `feeType` | ✅ grouping, but see the ⚠️ | ✅ none needed | ✅ A-5 |
 | **Kalshi** | ✅ | ✅ | ✅ single rate | ✅ grouping | ✅ none needed | ✅ A-8 — but see the ⚠️ |
 | **Limitless** | ✅ spiked | ❓ | ✅ curve | ❓ | ✅ none needed | ⏸ A-9 — scope questioned, see below |
 
@@ -230,6 +230,45 @@ assembled leg count against the group size the event itself declares, and drops 
 mismatch. "At least 2 legs" is not a completeness check: two legs of a 51-outcome race
 cost ~$0.39 and would present as a ~60¢ risk-free edge on a set that can never be
 redeemed.
+
+### ⚠️ A leg count matching the venue's declared group size is NOT proof of exhaustiveness
+
+The check above (`negRiskGroupSize`) catches a group that is *short*. It cannot catch a
+group whose members are individually well-formed but jointly **do not tile the real
+outcome space** — every declared leg present, `negRisk: true`, the count matching, and
+the set still not exhaustive.
+
+Live example, event `eurozone-2026-annual-inflation` (9 declared members, all 9 present
+and active):
+
+| Market | Range |
+|---|---|
+| `…less-than-1pt0` | (−∞, 1.0) |
+| `…between-1pt0-and-1pt2` | [1.0, 1.2] |
+| `…between-1pt3-and-1pt5` | [1.3, 1.5] |
+| `…between-1pt7-and-1pt9` | [1.7, 1.9] |
+| `…between-1pt9-and-2pt1` | [1.9, 2.1] |
+| `…between-2pt4-and-2pt5` | [2.4, 2.5] |
+| `…between-2pt5-and-2pt7` | [2.5, 2.7] |
+| `…between-2pt8-and-3pt0` | [2.8, 3.0] |
+| `…at-least-3pt1` | [3.1, ∞) |
+
+1.9 and 2.5 are each claimed by **two** bands; 1.6, 2.2–2.3, and (3.0, 3.1) are claimed by
+**none**. If the published rate lands in a gap, every YES leg resolves NO and the
+"complete set" this repo bought redeems for **$0**, not $1 — the defining premise of the
+whole strategy. Verified against `GET /events/{id}` at query time, not inferred from
+slugs alone.
+
+**Consequence: `negRiskMarketID` + a matching leg count is a completeness check on
+Polymarket's bookkeeping, not on the real-world outcome space it claims to partition.**
+No field in the Gamma or CLOB response asserts the latter, and this repo has no rule
+engine capable of parsing a market's resolution text and proving the union of ranges is
+gap-free and non-overlapping. Until one exists, `lib/arb.mjs`'s `clearsThreshold` never
+lets a `neg_risk` result clear, regardless of its measured edge — see that function's
+docstring. The set is still fully **priced** (a real `net_edge`, never hidden or
+skipped); it just cannot claim to be a genuine, redeemable arbitrage on this evidence
+alone. Binary sets are unaffected: a market resolves YES or NO, always, by construction
+— there is no third case for a gap to hide in.
 
 ### ✅ Auth
 
