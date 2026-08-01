@@ -6,7 +6,14 @@ import { join } from 'node:path';
 
 import { DatabaseSync } from 'node:sqlite';
 
-import { openDb, persistMarkets, retentionCutoffMs, sweepOpportunities } from '../lib/db.mjs';
+import {
+  getState,
+  openDb,
+  persistMarkets,
+  retentionCutoffMs,
+  setState,
+  sweepOpportunities,
+} from '../lib/db.mjs';
 
 /** Build a scratch directory. Helpers build INPUTS, never expected outputs. */
 function scratch() {
@@ -133,7 +140,7 @@ test('openDb defaults busy_timeout to 5000 when not specified', () => {
   }
 });
 
-test('openDb applies the schema, creating exactly the four expected tables', () => {
+test('openDb applies the schema, creating exactly the five expected tables', () => {
   const dir = scratch();
   try {
     const db = openDb(join(dir, 'a.db'));
@@ -141,7 +148,7 @@ test('openDb applies the schema, creating exactly the four expected tables', () 
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
       .all()
       .map((r) => r.name);
-    assert.deepEqual(names, ['book_tops', 'markets', 'opportunities', 'opportunity_legs']);
+    assert.deepEqual(names, ['book_tops', 'markets', 'opportunities', 'opportunity_legs', 'service_state']);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -336,7 +343,7 @@ test('an in-memory DB opens with the schema applied and needs no directory', () 
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all()
     .map((r) => r.name);
-  assert.deepEqual(names, ['book_tops', 'markets', 'opportunities', 'opportunity_legs']);
+  assert.deepEqual(names, ['book_tops', 'markets', 'opportunities', 'opportunity_legs', 'service_state']);
   db.close();
 });
 
@@ -585,4 +592,69 @@ test('sweepOpportunities rejects a bad retention setting rather than sweeping wr
     assert.throws(() => sweepOpportunities(db, { nowMs: SWEEP_NOW, keepDays: 1.5 }), TypeError);
     assert.throws(() => sweepOpportunities(db, { nowMs: Number.NaN, keepDays: 90 }), TypeError);
   });
+});
+
+// ── service_state: facts that must survive the process ─────────────────────
+
+test('a key that was never written reads as null, not as a default', () => {
+  // The startup throttle asks "have I announced recently?". A missing key must mean
+  // "never", not "just now" -- the wrong answer here silences a first run entirely.
+  withSweepDb((db) => assert.equal(getState(db, 'nope'), null));
+});
+
+test('setState then getState round-trips the value and its timestamp', () => {
+  withSweepDb((db) => {
+    setState(db, 'k', 'v', SWEEP_NOW);
+    assert.deepEqual(getState(db, 'k'), { value: 'v', updatedMs: SWEEP_NOW });
+  });
+});
+
+test('writing the same key again replaces it rather than erroring or duplicating', () => {
+  withSweepDb((db) => {
+    setState(db, 'k', 'first', SWEEP_NOW);
+    setState(db, 'k', 'second', SWEEP_NOW + 1000);
+    assert.deepEqual(getState(db, 'k'), { value: 'second', updatedMs: SWEEP_NOW + 1000 });
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM service_state').get().n, 1);
+  });
+});
+
+test('keys are independent', () => {
+  withSweepDb((db) => {
+    setState(db, 'a', '1', SWEEP_NOW);
+    setState(db, 'b', '2', SWEEP_NOW);
+    assert.equal(getState(db, 'a').value, '1');
+    assert.equal(getState(db, 'b').value, '2');
+  });
+});
+
+test('a value is stored as text, so a number round-trips as its string', () => {
+  withSweepDb((db) => {
+    setState(db, 'ts', 1700000000000, SWEEP_NOW);
+    assert.equal(getState(db, 'ts').value, '1700000000000');
+    assert.equal(Number(getState(db, 'ts').value), 1700000000000);
+  });
+});
+
+test('setState rejects a non-finite timestamp rather than storing a corrupt one', () => {
+  withSweepDb((db) => {
+    assert.throws(() => setState(db, 'k', 'v', Number.NaN), TypeError);
+    assert.throws(() => setState(db, 'k', 'v', undefined), TypeError);
+  });
+});
+
+test('service_state survives reopening the database', () => {
+  // The whole point: launchd kills and restarts the process, and this has to outlive it.
+  const dir = mkdtempSync(join(tmpdir(), 'gp-arb-state-'));
+  const file = join(dir, 'a.db');
+  try {
+    const first = openDb(file);
+    setState(first, 'watchdog:last', '123', SWEEP_NOW);
+    first.close();
+
+    const second = openDb(file);
+    assert.deepEqual(getState(second, 'watchdog:last'), { value: '123', updatedMs: SWEEP_NOW });
+    second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

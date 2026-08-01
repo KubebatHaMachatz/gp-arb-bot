@@ -145,6 +145,7 @@ a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set
 | `GPA_LOCK_PORT_WATCHDOG` | `43244` | 1024–65535 | Singleton lock, watchdog — it owns the retention sweep, so it is a writer too |
 | `GPA_WATCHDOG_INTERVAL_MS` | `60000` | ≥ 1000 | How often the watchdog checks every feed's clock |
 | `GPA_WATCHDOG_REPEAT_MS` | `1800000` | ≥ 0 | Before a **still-stale** feed is re-reported. **0 re-reports every check** — valid, and the fastest way to get the alert channel muted. |
+| `GPA_STARTUP_PING_MIN_GAP_MS` | `60000` | ≥ 0 | Minimum gap between startup announcements. Separates a deliberate restart (announce) from a launchd `KeepAlive` crash loop (do not announce every 10s until the channel is muted). Throttled **through the database**, since in-process state dies with the process it was meant to protect. |
 | `GPA_FEED_STALE_MS_POLYMARKET` | `600000` | ≥ 1 | Staleness threshold, Polymarket |
 | `GPA_FEED_STALE_MS_KALSHI` | `1800000` | ≥ 1 | Staleness threshold, Kalshi |
 | `GPA_FEED_STALE_MS_LIMITLESS` | `1800000` | ≥ 1 | Staleness threshold, Limitless |

@@ -435,3 +435,9 @@ test('the watchdog repeat interval accepts 0, which re-reports on every check', 
   assert.equal(loadConfig({ GPA_WATCHDOG_REPEAT_MS: '0' }).watchdogRepeatMs, 0);
   assert.throws(() => loadConfig({ GPA_WATCHDOG_REPEAT_MS: '-1' }), /GPA_WATCHDOG_REPEAT_MS/);
 });
+
+test('the startup-ping gap defaults small enough that a real restart is still announced', () => {
+  assert.equal(loadConfig({}).startupPingMinGapMs, DEFAULTS.GPA_STARTUP_PING_MIN_GAP_MS);
+  assert.equal(loadConfig({ GPA_STARTUP_PING_MIN_GAP_MS: '0' }).startupPingMinGapMs, 0);
+  assert.throws(() => loadConfig({ GPA_STARTUP_PING_MIN_GAP_MS: '-1' }), /GPA_STARTUP_PING_MIN_GAP_MS/);
+});

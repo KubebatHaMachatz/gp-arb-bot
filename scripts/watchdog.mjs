@@ -22,15 +22,18 @@
  */
 
 import { loadConfig } from '../lib/config.mjs';
-import { openDb, sweepOpportunities } from '../lib/db.mjs';
+import { getState, openDb, setState, sweepOpportunities } from '../lib/db.mjs';
 import { createNotifier } from '../lib/notify.mjs';
 import { acquireLock } from '../lib/singleton.mjs';
 import {
+  STARTUP_STATE_KEY,
   classifyFeed,
   createKickPolicy,
   lastRowMsByVenue,
   parseVenueList,
   resolveWatchedVenues,
+  shouldAnnounceStartup,
+  startupMessage,
 } from '../lib/watchdog.mjs';
 
 const args = process.argv.slice(2);
@@ -61,6 +64,9 @@ const notifier = createNotifier({
   botToken: process.env.GPA_TELEGRAM_BOT_TOKEN,
   chatId: process.env.GPA_TELEGRAM_CHAT_ID,
   log,
+  // Overridable ONLY so an end-to-end test can point at a local stub instead of posting
+  // to a real chat. Unset in every real run, which is the documented Telegram endpoint.
+  ...(process.env.GPA_TELEGRAM_API_BASE ? { apiBase: process.env.GPA_TELEGRAM_API_BASE } : {}),
 });
 if (!notifier.enabled) {
   log('alerting is inert (GPA_TELEGRAM_BOT_TOKEN + GPA_TELEGRAM_CHAT_ID unset); logging only');
@@ -100,6 +106,7 @@ async function tick() {
     process.exit(1);
   }
 
+  const classified = [];
   for (const venue of venues) {
     const feed = classifyFeed({
       venue,
@@ -108,6 +115,8 @@ async function tick() {
       thresholdMs: cfg.feedStaleMs[venue],
       startedMs,
     });
+
+    classified.push(feed);
 
     const kick = policy.next(feed, nowMs);
     if (kick === null) continue;
@@ -126,6 +135,8 @@ async function tick() {
       log('retention sweep failed:', err.message);
     }
   }
+
+  return { venues, feeds: classified };
 }
 
 log(
@@ -133,7 +144,46 @@ log(
     `retention=${cfg.keepOppDays}d thresholds=${JSON.stringify(cfg.feedStaleMs)}`,
 );
 
-await tick();
+const first = await tick();
+
+/**
+ * Announce that the service is up.
+ *
+ * Sent AFTER the first tick so it can report real feed state instead of a bare "alive" —
+ * an operator reading this on a phone should be able to tell whether the restart landed
+ * somewhere healthy without opening a laptop.
+ *
+ * Throttled through the database rather than memory: launchd `KeepAlive` restarts a
+ * crashing service every ThrottleInterval, and in-process state dies with the process it
+ * was meant to protect. Without this, a crash loop posts hundreds of messages an hour
+ * until the channel is muted — and a muted channel takes the staleness alerts with it.
+ */
+if (notifier.enabled && first) {
+  const nowMs = Date.now();
+  let lastMs = null;
+  try {
+    lastMs = getState(db, STARTUP_STATE_KEY)?.updatedMs ?? null;
+  } catch (err) {
+    log('could not read startup state:', err.message);
+  }
+
+  if (shouldAnnounceStartup({ lastMs, nowMs, minGapMs: cfg.startupPingMinGapMs })) {
+    const message = startupMessage({ ...first, keepOppDays: cfg.keepOppDays, nowMs });
+    log(message.split('\n')[0]);
+    const sent = await notifier.send(`[gp-arb-bot] ${message}`);
+    // Record only on a CONFIRMED send. Recording an attempt would let one network blip
+    // suppress the next announcement too, which is the wrong way for this to fail.
+    if (sent) {
+      try {
+        setState(db, STARTUP_STATE_KEY, String(nowMs), nowMs);
+      } catch (err) {
+        log('could not record startup state:', err.message);
+      }
+    }
+  } else {
+    log('startup notice suppressed (a recent start was already announced)');
+  }
+}
 
 if (once) {
   db.close();

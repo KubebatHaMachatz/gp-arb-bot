@@ -13,6 +13,8 @@ import {
   lastRowMsByVenue,
   parseVenueList,
   resolveWatchedVenues,
+  shouldAnnounceStartup,
+  startupMessage,
 } from '../lib/watchdog.mjs';
 
 const MIN = 60_000;
@@ -316,4 +318,100 @@ test('duplicates collapse, so a venue is never checked twice per tick', () => {
 
 test('an empty database watches nothing rather than everything', () => {
   assert.deepEqual(resolveWatchedVenues({ configured: null, present: [], thresholds: THRESHOLDS }), []);
+});
+
+// ── startup announcement: heard on a real restart, silent in a crash loop ───
+
+test('a first-ever start is always announced', () => {
+  assert.equal(shouldAnnounceStartup({ lastMs: null, nowMs: NOW, minGapMs: 60_000 }), true);
+  assert.equal(shouldAnnounceStartup({ lastMs: undefined, nowMs: NOW, minGapMs: 60_000 }), true);
+});
+
+test('a deliberate restart well after the last one is announced', () => {
+  assert.equal(shouldAnnounceStartup({ lastMs: NOW - 10 * MIN, nowMs: NOW, minGapMs: 60_000 }), true);
+});
+
+test('a crash loop is NOT announced on every respawn', () => {
+  // launchd KeepAlive restarts a crashing service every ThrottleInterval (10s here).
+  // Unguarded, that is ~360 messages an hour until somebody mutes the channel — and
+  // muting is permanent in practice, taking the real staleness alerts with it.
+  let sent = 0;
+  let last = null;
+  for (let t = 0; t < 3_600_000; t += 10_000) {
+    if (shouldAnnounceStartup({ lastMs: last, nowMs: NOW + t, minGapMs: 60_000 })) {
+      sent += 1;
+      last = NOW + t;
+    }
+  }
+  assert.equal(sent, 60, 'one per minute, not one per respawn');
+});
+
+test('the boundary is inclusive — exactly at the gap announces', () => {
+  assert.equal(shouldAnnounceStartup({ lastMs: NOW - 60_000, nowMs: NOW, minGapMs: 60_000 }), true);
+  assert.equal(shouldAnnounceStartup({ lastMs: NOW - 59_999, nowMs: NOW, minGapMs: 60_000 }), false);
+});
+
+test('a gap of 0 announces every start — valid, and rarely what anyone wants', () => {
+  assert.equal(shouldAnnounceStartup({ lastMs: NOW, nowMs: NOW, minGapMs: 0 }), true);
+});
+
+test('a backwards clock announces rather than going silent', () => {
+  // An NTP correction or a restored backup can put `now` behind the stored timestamp.
+  // Suppressing until wall-clock caught up could silence startups for hours.
+  assert.equal(shouldAnnounceStartup({ lastMs: NOW + 10 * MIN, nowMs: NOW, minGapMs: 60_000 }), true);
+});
+
+test('shouldAnnounceStartup validates its inputs', () => {
+  assert.throws(() => shouldAnnounceStartup({ lastMs: null, nowMs: Number.NaN, minGapMs: 1 }), TypeError);
+  assert.throws(() => shouldAnnounceStartup({ lastMs: null, nowMs: NOW, minGapMs: -1 }), TypeError);
+  assert.throws(() => shouldAnnounceStartup({ lastMs: 'soon', nowMs: NOW, minGapMs: 1 }), TypeError);
+});
+
+// ── the announcement text ───────────────────────────────────────────────────
+
+test('the startup message reports each watched feed, not just "I am alive"', () => {
+  const msg = startupMessage({
+    venues: ['polymarket'],
+    feeds: [{ venue: 'polymarket', state: 'ok', ageMs: 2 * MIN }],
+    keepOppDays: 90,
+    nowMs: NOW,
+  });
+  assert.match(msg, /STARTED/);
+  assert.match(msg, /polymarket: ok, last row 2 min ago/);
+  assert.match(msg, /retention: 90 days/);
+});
+
+test('a venue with no rows yet is reported honestly, not as healthy', () => {
+  const msg = startupMessage({
+    venues: ['polymarket'],
+    feeds: [{ venue: 'polymarket', state: 'starting', ageMs: null }],
+    keepOppDays: 90,
+    nowMs: NOW,
+  });
+  assert.match(msg, /polymarket: no rows yet \(starting\)/);
+});
+
+test('a watched venue with no classification at all says so', () => {
+  const msg = startupMessage({ venues: ['kalshi'], feeds: [], keepOppDays: 90, nowMs: NOW });
+  assert.match(msg, /kalshi: no data yet/);
+});
+
+test('watching nothing is stated plainly — a silent list reads as healthy', () => {
+  const msg = startupMessage({ venues: [], feeds: [], keepOppDays: 90, nowMs: NOW });
+  assert.match(msg, /no venues being watched/);
+});
+
+test('disabled retention is spelled out rather than shown as "0 days"', () => {
+  const msg = startupMessage({ venues: [], feeds: [], keepOppDays: 0, nowMs: NOW });
+  assert.match(msg, /retention: disabled/);
+});
+
+test('the startup message never contains a credential-shaped value', () => {
+  const msg = startupMessage({
+    venues: ['polymarket'],
+    feeds: [{ venue: 'polymarket', state: 'ok', ageMs: 1000 }],
+    keepOppDays: 90,
+    nowMs: NOW,
+  });
+  assert.doesNotMatch(msg, /token|chat_id|GPA_TELEGRAM/i);
 });

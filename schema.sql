@@ -104,3 +104,16 @@ CREATE TABLE IF NOT EXISTS opportunity_legs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_opp_legs_opp ON opportunity_legs (opportunity_id);
+
+-- ── service_state ──────────────────────────────────────────────────────────────
+-- Small key/value scratchpad for facts a service must remember ACROSS restarts.
+--
+-- In-memory state is useless for anything that has to survive a crash, and under launchd
+-- `KeepAlive` a crashing service restarts every ThrottleInterval — so "have I already done
+-- this?" has to outlive the process that asked. First use: the startup notification's
+-- throttle, which is what stops a crash loop from turning into a Telegram flood.
+CREATE TABLE IF NOT EXISTS service_state (
+  key        TEXT    PRIMARY KEY,
+  value      TEXT    NOT NULL,
+  updated_ms INTEGER NOT NULL
+);
