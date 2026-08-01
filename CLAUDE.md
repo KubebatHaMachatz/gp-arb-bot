@@ -102,7 +102,7 @@ failure.
 
 ---
 
-## 3. The two facts everything else follows from
+## 3. The three facts everything else follows from
 
 **Fees are quadratic and vanish at the tails.** Both Polymarket and Kalshi charge
 `fee = C × feeRate × p × (1−p)` on takers only. A complete set at 0.90/0.05 costs ~0.55¢
@@ -113,6 +113,17 @@ a hand-tabulated, direction-dependent curve that no single scalar can represent 
 **Capacity is share-constrained, not dollar-constrained.** An arb locks $1 per share-*set*,
 so size is `min(sharesᵢ) × Σ costᵢ`. Taking `min(dollars)` understates the cheap leg and
 silently oversizes the trade.
+
+**A matching leg count is not proof a neg-risk set is exhaustive.** `negRiskMarketID`
+plus the venue's own declared group size only proves every *declared* member is present
+— it says nothing about whether those members jointly cover every real-world outcome. A
+live 9-leg "Eurozone inflation" event had bands that overlap at some values and leave
+gaps at others (see `docs/adapters.md`); if the published rate lands in a gap, every leg
+resolves NO and the "complete set" redeems for $0, not $1. **`clearsThreshold` in
+`lib/arb.mjs` therefore never lets a `neg_risk` result clear** — it is still fully
+priced and stored, just not counted as a genuine redeemable arbitrage — pending a real
+check that the outcome space is actually partitioned. Binary sets are unaffected: a
+market resolves YES or NO, always, by construction.
 
 ---
 

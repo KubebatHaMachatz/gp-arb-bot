@@ -169,14 +169,43 @@ test('SAME gross cost, different outcome — purely because of the fee SHAPE', (
 // ── clearsThreshold ─────────────────────────────────────────────────────────
 
 test('clearsThreshold compares net edge inclusively against the floor', () => {
-  const r = { netEdge: 0.02, skipped: null };
+  const r = { netEdge: 0.02, skipped: null, kind: KIND_BINARY };
   assert.equal(clearsThreshold(r, { minNetEdge: 0.019 }), true);
   assert.equal(clearsThreshold(r, { minNetEdge: 0.02 }), true, 'exactly at the floor clears');
   assert.equal(clearsThreshold(r, { minNetEdge: 0.021 }), false);
 });
 
 test('clearsThreshold rejects a skipped result outright', () => {
-  assert.equal(clearsThreshold({ netEdge: null, skipped: 'stale_book' }, { minNetEdge: 0.005 }), false);
+  assert.equal(
+    clearsThreshold({ netEdge: null, skipped: 'stale_book', kind: KIND_BINARY }, { minNetEdge: 0.005 }),
+    false,
+  );
+});
+
+test('clearsThreshold never clears a neg_risk result, however large the edge', () => {
+  // A neg-risk group's completeness rests on Polymarket's negRiskMarketID plus a
+  // matching leg count -- not proof the outcomes are exhaustive. A live 9-leg
+  // "Eurozone inflation" event was found with bands that do not tile the real number
+  // line, so a "complete" set built from it can redeem for $0, not $1. The edge is
+  // still a real, storable number (this is not a skip) -- it just cannot claim to be a
+  // genuine, redeemable clear until a real exhaustiveness check exists.
+  const r = { netEdge: 0.2064, skipped: null, kind: KIND_NEG_RISK };
+  assert.equal(clearsThreshold(r, { minNetEdge: 0.005 }), false);
+  assert.equal(clearsThreshold(r, { minNetEdge: 1e-9 }), false, 'no floor is low enough');
+});
+
+test('clearsThreshold fails CLOSED on a missing or unrecognised kind, not just neg_risk', () => {
+  // A positive whitelist (only KIND_BINARY clears) rather than a blacklist on
+  // KIND_NEG_RISK specifically: a third kind added later, or a caller that forgot to
+  // set kind at all, must not be silently treated as clearable by default. That is the
+  // same fail-open shape this file's freshness gate was already fixed twice for.
+  for (const kind of [undefined, null, '', 'neg_risk_typo', KIND_NEG_RISK]) {
+    assert.equal(
+      clearsThreshold({ netEdge: 0.02, skipped: null, kind }, { minNetEdge: 0.005 }),
+      false,
+      `kind ${String(kind)} must not clear`,
+    );
+  }
 });
 
 test('a set priced at exactly $1 with zero fees is not a tradeable edge', () => {
@@ -189,7 +218,7 @@ test('a set priced at exactly $1 with zero fees is not a tradeable edge', () => 
 });
 
 test('clearsThreshold requires a positive floor, matching the config rule', () => {
-  const r = { netEdge: 0.02, skipped: null };
+  const r = { netEdge: 0.02, skipped: null, kind: KIND_BINARY };
   // Includes 1.01: the floor is a price fraction, so a value above 1 is a
   // misunderstanding (a percentage, probably) and can never be met.
   for (const bad of [0, -0.01, 1.01, Number.NaN, '0.005', null, undefined]) {
@@ -587,8 +616,8 @@ test('detectOpportunity falls back to a top-level bookTs for legs without one', 
   });
   assert.equal(out.bookAgeMs, 400);
   assert.equal(out.legCount, 3);
-  closeTo(out.netEdge, 0.008875, 'netEdge');
-  assert.equal(out.clears, true);
+  closeTo(out.netEdge, 0.008875, 'netEdge: neg_risk is still PRICED, fallback and all');
+  assert.equal(out.clears, false, 'but neg_risk never clears, regardless of the edge');
 });
 
 test('detectOpportunity records a sub-threshold result instead of hiding it', () => {
