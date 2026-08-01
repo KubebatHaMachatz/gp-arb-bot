@@ -130,6 +130,7 @@ a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set
 |---|---|---|---|
 | `GPA_DB` | `data/arb.db` | non-empty | SQLite file path |
 | `GPA_BOOK_STALE_MS` | `750` | 1–60000 | Freshness gate — never act on a book image older than this. Bounded **both** ways: `0` rejects every book, and a huge value is not a lenient gate but *no* gate. |
+| `GPA_CLOCK_SKEW_TOLERANCE_MS` | `5000` | 0–60000 | The other side of the freshness gate — how far a venue's own timestamp may run *ahead* of this process's clock before it is treated as anomalous rather than ordinary jitter (measured live at up to ~190ms). `bookAgeMs > bookStaleMs` can never trip on a negative age, however large, so without this an NTP glitch or corrupted timestamp is silently "maximally fresh". Bounded above for the same reason `GPA_BOOK_STALE_MS` is: an unbounded tolerance reopens the same hole on the other side of zero. |
 | `GPA_MIN_NET_EDGE` | `0.005` | (0, 1] | Minimum post-fee edge per complete set, as a price fraction |
 | `GPA_MAX_SET_SIZE_USD` | `250` | > 0 | Hard cap on notional per complete set |
 | `GPA_DEPTH_SAFETY_FACTOR` | `0.5` | (0, 1] | Size to `min(depth) × this`. **0 is rejected** — it is not "disabled", it silently sizes every trade to nothing. |

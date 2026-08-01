@@ -355,7 +355,13 @@ test('setCapacity requires at least two legs', () => {
 
 // ── detectOpportunity ───────────────────────────────────────────────────────
 
-const CFG = Object.freeze({ bookStaleMs: 750, minNetEdge: 0.005, depthSafetyFactor: 0.5, maxSetSizeUsd: 250 });
+const CFG = Object.freeze({
+  bookStaleMs: 750,
+  clockSkewToleranceMs: 5000,
+  minNetEdge: 0.005,
+  depthSafetyFactor: 0.5,
+  maxSetSizeUsd: 250,
+});
 
 test('detectOpportunity returns a row shaped for the opportunities schema', () => {
   const out = detectOpportunity({
@@ -443,6 +449,129 @@ test('detectOpportunity accepts a book exactly at the staleness bound', () => {
   });
   assert.equal(out.bookAgeMs, 750);
   assert.equal(out.skipped, null);
+});
+
+test('detectOpportunity prices a book that looks slightly "from the future" — ordinary clock jitter', () => {
+  // The venue's own timestamp is sometimes a few tens of ms ahead of this process's
+  // clock (measured live: -190ms at the extreme, median -69ms across 136k samples).
+  // That is NOT staleness — physically the book was just updated — so within tolerance
+  // it must price normally, not be treated with suspicion.
+  const out = detectOpportunity({
+    venue: 'polymarket',
+    eventKey: 'evt-skew',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 1_000_190 },
+      { price: 0.45, sizeShares: 600, bookTs: 1_000_190 },
+    ],
+    feeFn: politics(),
+    cfg: CFG,
+    nowMs: 1_000_000, // bookTs is 190ms AHEAD of nowMs -> bookAgeMs = -190
+  });
+  assert.equal(out.bookAgeMs, -190);
+  assert.equal(out.skipped, null);
+  assert.equal(out.clears, true);
+});
+
+test('detectOpportunity SKIPS a book claiming to be implausibly far in the future', () => {
+  // A one-sided freshness check (`age > bookStaleMs`) can never be tripped by a negative
+  // age, however large in magnitude — so an NTP glitch, a garbled timestamp field, or a
+  // unit mismatch (seconds mistaken for ms) would be silently treated as "maximally
+  // fresh" with no error, no matter how anomalous. That is the same fail-open shape as
+  // an absent bookStaleMs, just on the other side of zero. Beyond the tolerance, this is
+  // no longer ordinary jitter and must not become a tradeable claim.
+  const out = detectOpportunity({
+    venue: 'polymarket',
+    eventKey: 'evt-skew-2',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 1_100_000 },
+      { price: 0.45, sizeShares: 600, bookTs: 1_100_000 },
+    ],
+    feeFn: politics(),
+    cfg: CFG,
+    nowMs: 1_000_000, // bookTs is 100,000ms ahead — 20x the 5000ms tolerance
+  });
+  assert.equal(out.bookAgeMs, -100_000, 'the raw age is still recorded, so the anomaly is measurable');
+  assert.equal(out.skipped, 'future_book');
+  assert.equal(out.clears, false);
+  assert.equal(out.netEdge, null, 'no edge is claimed');
+  assert.equal(out.grossCost, null);
+  assert.equal(out.totalFee, null);
+  assert.equal(out.capacityShares, null);
+  assert.equal(out.capacityUsd, null);
+});
+
+test('detectOpportunity accepts a book exactly at the negative tolerance bound', () => {
+  // Symmetric with the positive side: `bookAgeMs > cfg.bookStaleMs` skips only when
+  // STRICTLY greater, so exactly at the bound is priced. The negative bound mirrors
+  // that: skip only when STRICTLY more negative than -clockSkewToleranceMs.
+  const out = detectOpportunity({
+    venue: 'polymarket',
+    eventKey: 'evt-skew-3',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 1_005_000 },
+      { price: 0.45, sizeShares: 600, bookTs: 1_005_000 },
+    ],
+    feeFn: politics(),
+    cfg: CFG,
+    nowMs: 1_000_000, // bookTs is exactly 5000ms ahead == clockSkewToleranceMs
+  });
+  assert.equal(out.bookAgeMs, -5000);
+  assert.equal(out.skipped, null);
+});
+
+test('detectOpportunity ages from the leg claiming the MOST anomalous future timestamp', () => {
+  // Mirrors "ages from the oldest leg" on the other side of zero: one leg with a
+  // plausible timestamp cannot vouch for a sibling leg whose timestamp looks broken.
+  const out = detectOpportunity({
+    venue: 'polymarket',
+    eventKey: 'evt-skew-4',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 1_000_050 }, // 50ms ahead — fine
+      { price: 0.45, sizeShares: 600, bookTs: 1_100_000 }, // 100,000ms ahead — anomalous
+    ],
+    feeFn: politics(),
+    cfg: CFG,
+    nowMs: 1_000_000,
+  });
+  assert.equal(out.bookAgeMs, -100_000);
+  assert.equal(out.skipped, 'future_book');
+});
+
+test('detectOpportunity REJECTS a cfg without a usable clockSkewToleranceMs — this half of the gate fails CLOSED too', () => {
+  // Exactly the same vulnerability as an absent bookStaleMs, mirrored: `age <
+  // -undefined` is a NaN comparison and therefore false, so a partial or misspelled cfg
+  // would silently disable the negative-side check and again let an anomalous timestamp
+  // through as "fresh".
+  const base = {
+    venue: 'polymarket',
+    eventKey: 'e',
+    kind: KIND_BINARY,
+    legs: [
+      { price: 0.5, sizeShares: 400, bookTs: 0 },
+      { price: 0.45, sizeShares: 600, bookTs: 0 },
+    ],
+    feeFn: politics(),
+    nowMs: 100_000_000, // absurdly "far in the future" relative to bookTs=0
+  };
+  for (const bad of [undefined, null, Number.NaN, -1, '5000']) {
+    assert.throws(
+      () => detectOpportunity({ ...base, cfg: { ...CFG, clockSkewToleranceMs: bad } }),
+      /cfg\.clockSkewToleranceMs must be a finite number >= 0/,
+      `expected clockSkewToleranceMs ${String(bad)} to be rejected`,
+    );
+  }
+  // 0 IS valid here — zero tolerance for any future-looking timestamp is a legitimate,
+  // if strict, operational choice, so it must NOT be in the rejected set above.
+  const withoutTolerance = { ...CFG };
+  delete withoutTolerance.clockSkewToleranceMs;
+  assert.throws(
+    () => detectOpportunity({ ...base, cfg: withoutTolerance }),
+    /cfg\.clockSkewToleranceMs must be a finite number >= 0/,
+  );
 });
 
 test('detectOpportunity falls back to a top-level bookTs for legs without one', () => {

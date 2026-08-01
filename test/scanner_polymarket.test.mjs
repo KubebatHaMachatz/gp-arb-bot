@@ -31,6 +31,7 @@ const scratch = () => mkdtempSync(join(tmpdir(), 'gp-arb-scan-'));
 
 const CFG = Object.freeze({
   bookStaleMs: 750,
+  clockSkewToleranceMs: 5000,
   minNetEdge: 0.005,
   depthSafetyFactor: 0.5,
   maxSetSizeUsd: 250,
