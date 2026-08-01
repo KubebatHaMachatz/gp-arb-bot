@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-import { flagValue, labelFor, plistPath } from '../lib/launchd.mjs';
+import { SERVICES, flagValue, labelFor, plistPath } from '../lib/launchd.mjs';
 
 const HOME = homedir();
 const args = process.argv.slice(2);
@@ -29,11 +29,13 @@ if (flagError) {
   process.exit(1);
 }
 
-const SERVICES = ['scan-polymarket', 'scan-kalshi', 'watchdog'];
-
-const selected = only ? SERVICES.filter((s) => s === only) : SERVICES;
+// Uninstall acts on EVERY known service by default, not just the default-install set:
+// "remove it" must be able to remove something a previous `--service scan-kalshi`
+// installed, or that agent lingers and keeps writing to the database.
+const names = SERVICES.map((s) => s.name);
+const selected = only ? names.filter((n) => n === only) : names;
 if (selected.length === 0) {
-  console.error(`unknown service "${only}". Known: ${SERVICES.join(', ')}`);
+  console.error(`unknown service "${only}". Known: ${names.join(', ')}`);
   process.exit(1);
 }
 

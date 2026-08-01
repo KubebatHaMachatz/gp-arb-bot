@@ -8,8 +8,9 @@
  *
  *   npm run launchd:install -- --dry-run
  *
- * Three services, each its own process so a stalled feed on one venue cannot touch
- * another: the Polymarket scanner, the Kalshi scanner, and the watchdog.
+ * Each service is its own process, so a stalled feed on one venue cannot touch another.
+ * A bare run installs the DEFAULT set (Polymarket scanner, watchdog, dashboard);
+ * `scan-kalshi` is supported but opt-in — see the SERVICES table for why.
  *
  * `--dry-run` prints each plist and writes nothing, which is the sane way to inspect what
  * is about to be installed into `~/Library/LaunchAgents`.
@@ -31,6 +32,7 @@ import {
   labelFor,
   plistFor,
   plistPath,
+  selectServices,
 } from '../lib/launchd.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,12 +55,6 @@ function requireFlag(name) {
 
 const only = requireFlag('--service');
 const override = requireFlag('--node');
-
-const SERVICES = [
-  { name: 'scan-polymarket', script: 'scripts/scan_polymarket.mjs' },
-  { name: 'scan-kalshi', script: 'scripts/scan_kalshi.mjs' },
-  { name: 'watchdog', script: 'scripts/watchdog.mjs' },
-];
 
 /** Minimum runtime this repo needs, from package.json's `engines`. */
 const MIN_NODE = [22, 5];
@@ -122,10 +118,15 @@ function resolveNode() {
 
 const NODE = resolveNode();
 
-const selected = only ? SERVICES.filter((s) => s.name === only) : SERVICES;
-if (selected.length === 0) {
-  console.error(`unknown service "${only}". Known: ${SERVICES.map((s) => s.name).join(', ')}`);
+const { selected, skipped, error: selectError } = selectServices(only);
+if (selectError) {
+  console.error(selectError);
   process.exit(1);
+}
+if (skipped.length > 0) {
+  // Say what was NOT installed. A silent omission reads as "everything is running",
+  // which is the same class of confusion this repo's watchdog exists to prevent.
+  console.log(`not installed by default: ${skipped.join(', ')} (add with --service <name>)`);
 }
 
 /** Services whose plist was written but which launchctl refused to load. */
@@ -145,6 +146,7 @@ for (const svc of selected) {
     workingDirectory: REPO,
     stdoutPath: join(LOG_DIR, `${svc.name}.log`),
     stderrPath: join(LOG_DIR, `${svc.name}.err`),
+    environment: svc.environment ?? {},
   });
 
   if (dryRun) {

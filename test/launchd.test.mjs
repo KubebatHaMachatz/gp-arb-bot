@@ -9,8 +9,10 @@ import {
   isDurableNodePath,
   isSecretKey,
   labelFor,
+  SERVICES,
   plistFor,
   plistPath,
+  selectServices,
   xmlEscape,
 } from '../lib/launchd.mjs';
 
@@ -299,4 +301,76 @@ test('a value that merely contains dashes is fine', () => {
 test('a negative-looking value is still a value', () => {
   // Only a leading `--` marks a flag; a single dash is not this parser's concern.
   assert.equal(flagValue(['--node', '-'], '--node').value, '-');
+});
+
+// ── the service table, shared by install and uninstall ──────────────────────
+
+test('every service has a name, a script and an explicit byDefault', () => {
+  assert.equal(Object.isFrozen(SERVICES), true);
+  for (const s of SERVICES) {
+    assert.equal(typeof s.name, 'string');
+    assert.notEqual(s.name, '');
+    assert.match(s.script, /\.mjs$/);
+    assert.equal(typeof s.byDefault, 'boolean', `${s.name} must state byDefault explicitly`);
+    assert.doesNotThrow(() => labelFor(s.name), `${s.name} must produce a loadable label`);
+  }
+});
+
+test('service names are unique — a duplicate would install one and orphan the other', () => {
+  const names = SERVICES.map((s) => s.name);
+  assert.equal(new Set(names).size, names.length);
+});
+
+test('a bare install takes the default set and reports what it skipped', () => {
+  const { selected, skipped, error } = selectServices(null);
+  assert.equal(error, null);
+  assert.deepEqual(selected.map((s) => s.name), ['scan-polymarket', 'watchdog', 'dashboard']);
+  assert.deepEqual(skipped, ['scan-kalshi']);
+});
+
+test('an opt-out service is still installable when named explicitly', () => {
+  // The Kalshi finding is about the public REST transport, not the venue forever. Making
+  // it unreachable would bake a transport limitation into the tooling permanently.
+  const { selected, error } = selectServices('scan-kalshi');
+  assert.equal(error, null);
+  assert.deepEqual(selected.map((s) => s.name), ['scan-kalshi']);
+});
+
+test('naming a default service selects exactly it', () => {
+  assert.deepEqual(selectServices('watchdog').selected.map((s) => s.name), ['watchdog']);
+});
+
+test('an unknown service is an error listing the real ones', () => {
+  const { selected, error } = selectServices('bogus');
+  assert.deepEqual(selected, []);
+  assert.match(error, /unknown service "bogus"/);
+  assert.match(error, /scan-polymarket/);
+  assert.match(error, /scan-kalshi/);
+});
+
+test('the watchdog pins its venue list rather than auto-discovering', () => {
+  // Auto-discovery watches whatever has rows. One manual scan_kalshi run would then have
+  // the watchdog alerting forever about a feed that is deliberately not installed.
+  const watchdog = SERVICES.find((s) => s.name === 'watchdog');
+  assert.equal(watchdog.environment.GPA_WATCH_VENUES, 'polymarket');
+});
+
+test('no service environment carries a credential', () => {
+  // Belt and braces: plistFor would throw at render time, but a table that cannot pass
+  // its own rule should fail here, where the message points at the table.
+  for (const s of SERVICES) {
+    assert.doesNotThrow(() => assertNoSecrets(s.environment ?? {}), s.name);
+  }
+});
+
+test('every service script exists in the repo', async () => {
+  // A typo here installs a LaunchAgent that cannot start: launchd retries every
+  // ThrottleInterval forever and says so only in the system log.
+  const { existsSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
+  for (const s of SERVICES) {
+    assert.equal(existsSync(join(repo, s.script)), true, `${s.name} -> ${s.script}`);
+  }
 });
