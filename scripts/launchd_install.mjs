@@ -151,6 +151,30 @@ if (skipped.length > 0) {
 /** Services whose plist was written but which launchctl refused to load. */
 const failures = [];
 
+/** Sleep without a dependency and without going async in this straight-line script. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Block until launchd no longer knows `label`.
+ *
+ * Returns whether it actually went away: a timeout is reported by the caller's bootstrap
+ * failing, which carries a better message than anything guessed here.
+ */
+function waitForUnload(label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      execFileSync('launchctl', ['print', `gui/${process.getuid()}/${label}`], { stdio: 'ignore' });
+    } catch {
+      return true; // print failed => launchd has forgotten it => safe to bootstrap
+    }
+    sleepSync(100);
+  }
+  return false;
+}
+
 if (!dryRun) {
   mkdirSync(LOG_DIR, { recursive: true });
   mkdirSync(join(HOME, 'Library', 'LaunchAgents'), { recursive: true });
@@ -181,6 +205,11 @@ for (const svc of selected) {
   } catch {
     // not currently loaded — the normal case on a first install
   }
+  // bootout RETURNS before the service is actually gone. Bootstrapping into that window
+  // fails, so a first install (nothing loaded, nothing to wait for) succeeds while every
+  // re-install fails -- and re-install is the common case, since it is what picks up a
+  // code change. Wait for launchd to stop knowing the label before loading it again.
+  waitForUnload(label);
 
   // A failure on one service must not abort the loop. Throwing here would leave the
   // remaining services untouched and the already-written plists loaded or not depending
