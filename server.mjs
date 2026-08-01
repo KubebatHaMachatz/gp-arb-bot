@@ -79,6 +79,28 @@ const server = createServer(async (req, res) => {
   }
 });
 
+// Without this, a failed bind is an unhandled 'error' event: Node rethrows it as an
+// uncaught exception and prints a raw stack. That was survivable while the dashboard was
+// a foreground command someone was watching, and is not now that it runs as a KeepAlive
+// LaunchAgent — an occupied port becomes a restart loop every ThrottleInterval forever,
+// re-dumping the same stack into logs/dashboard.err with nothing explaining it.
+//
+// An occupied 4324 is the EXPECTED collision here, not an exotic one: an operator starts
+// a dashboard by hand to check something while launchd's copy is already up. The other
+// three services get a clear refusal out of acquireLock; this one should read the same.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `dashboard cannot start: ${cfg.bind}:${cfg.port} is already in use — ` +
+        'another dashboard (very likely the launchd service com.gp-arb-bot.dashboard) ' +
+        'is already running. Stop that one, or set GPA_PORT to a different port.',
+    );
+  } else {
+    console.error(`dashboard cannot start: ${err.message}`);
+  }
+  process.exit(1);
+});
+
 server.listen(cfg.port, cfg.bind, () => {
   const loopback = cfg.bind === '127.0.0.1';
   // Print the HOSTNAME, not the bind address. They reach the same server, but some
