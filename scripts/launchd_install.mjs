@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ import {
   flagValue,
   isDurableNodePath,
   labelFor,
+  parseEnginesFloor,
   plistFor,
   plistPath,
   selectServices,
@@ -38,6 +39,20 @@ import {
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = homedir();
 const LOG_DIR = join(REPO, 'logs');
+
+/**
+ * Optional secrets/config file, loaded by Node itself.
+ *
+ * `--env-file-if-exists` rather than `--env-file`: the services must start on a machine
+ * that has no .env at all, which is the normal state until somebody configures alerting.
+ * `--env-file` treats a missing file as fatal, which would turn "alerting not set up yet"
+ * into three LaunchAgents crash-looping.
+ *
+ * This is the ONLY supported home for GPA_TELEGRAM_BOT_TOKEN. It cannot go in the plist
+ * (644, world-readable, and `assertNoSecrets` refuses it) and it should not go in
+ * `launchctl setenv`, which publishes it to every process in the GUI session.
+ */
+const ENV_FILE = join(REPO, '.env');
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
@@ -56,8 +71,12 @@ function requireFlag(name) {
 const only = requireFlag('--service');
 const override = requireFlag('--node');
 
-/** Minimum runtime this repo needs, from package.json's `engines`. */
-const MIN_NODE = [22, 5];
+// Read from package.json rather than restated. A second literal here silently disagreed
+// with engines the moment --env-file-if-exists raised the floor, and the installer would
+// then have picked a Node that cannot run what it just installed.
+const MIN_NODE = parseEnginesFloor(
+  JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).engines?.node,
+);
 
 /** `vX.Y.Z` → [X, Y], or null when the binary did not answer. */
 function nodeVersionOf(path) {
@@ -142,7 +161,7 @@ for (const svc of selected) {
   const path = plistPath(label, HOME);
   const xml = plistFor({
     label,
-    programArguments: [NODE, join(REPO, svc.script)],
+    programArguments: [NODE, `--env-file-if-exists=${ENV_FILE}`, join(REPO, svc.script)],
     workingDirectory: REPO,
     stdoutPath: join(LOG_DIR, `${svc.name}.log`),
     stderrPath: join(LOG_DIR, `${svc.name}.err`),

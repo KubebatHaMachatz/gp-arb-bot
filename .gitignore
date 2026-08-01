@@ -1,6 +1,9 @@
 # credentials — never commit
 .env
 .env.*
+# The ONLY exception, and it is narrow on purpose: the template carries variable NAMES and
+# commentary, never values. Anything else matching .env.* stays ignored.
+!.env.example
 *credentials*
 *.pem
 *.key

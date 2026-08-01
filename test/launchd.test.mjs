@@ -10,6 +10,7 @@ import {
   isSecretKey,
   labelFor,
   SERVICES,
+  parseEnginesFloor,
   plistFor,
   plistPath,
   selectServices,
@@ -373,4 +374,77 @@ test('every service script exists in the repo', async () => {
   for (const s of SERVICES) {
     assert.equal(existsSync(join(repo, s.script)), true, `${s.name} -> ${s.script}`);
   }
+});
+
+// ── flags alongside absolute paths in ProgramArguments ─────────────────────
+
+test('a flag carrying an absolute path is accepted', () => {
+  // `--env-file-if-exists=/abs/.env` holds its path INSIDE the token, so a naive
+  // startsWith('/') check on every argument would reject a perfectly valid invocation.
+  const xml = plistFor({
+    ...BASE,
+    programArguments: [
+      '/usr/local/bin/node',
+      '--env-file-if-exists=/repo/.env',
+      '/repo/scripts/scan_polymarket.mjs',
+    ],
+  });
+  assert.match(xml, /<string>--env-file-if-exists=\/repo\/\.env<\/string>/);
+  assert.match(xml, /<string>\/repo\/scripts\/scan_polymarket\.mjs<\/string>/);
+});
+
+test('a NON-flag argument after a flag must still be absolute', () => {
+  // Exempting flags must not become exempting everything: a relative script path is
+  // still a service that starts, fails to find its target, and dies in a KeepAlive loop.
+  assert.throws(
+    () =>
+      plistFor({
+        ...BASE,
+        programArguments: ['/usr/local/bin/node', '--env-file-if-exists=/repo/.env', 'scripts/x.mjs'],
+      }),
+    /absolute/,
+  );
+});
+
+test('the executable itself is never exempt, even spelled like a flag', () => {
+  assert.throws(() => plistFor({ ...BASE, programArguments: ['node', '/repo/x.mjs'] }), /absolute/);
+  assert.throws(() => plistFor({ ...BASE, programArguments: ['--weird', '/repo/x.mjs'] }), /absolute/);
+});
+
+// ── the version floor comes from engines, never a second literal ────────────
+
+test('parseEnginesFloor reads the form this repo uses', () => {
+  assert.deepEqual(parseEnginesFloor('>=22.9'), [22, 9]);
+  assert.deepEqual(parseEnginesFloor('>=22.5'), [22, 5]);
+  assert.deepEqual(parseEnginesFloor('>= 24.1'), [24, 1]);
+});
+
+test('a major-only range floors the minor at 0', () => {
+  assert.deepEqual(parseEnginesFloor('>=22'), [22, 0]);
+});
+
+test('an unreadable range throws instead of guessing permissively', () => {
+  // Guessing low is the dangerous direction: the installer would accept a Node that
+  // cannot run the services, write the plists, and leave them crash-looping.
+  for (const bad of ['^22.9', '22.9', '', null, undefined, 'latest', '>=abc']) {
+    assert.throws(() => parseEnginesFloor(bad), TypeError, String(bad));
+  }
+});
+
+test('the floor the installer enforces matches package.json engines', async () => {
+  // These drifted apart the moment --env-file-if-exists raised the requirement, which is
+  // exactly the bug this test exists to prevent recurring.
+  const { readFileSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+  const floor = parseEnginesFloor(pkg.engines.node);
+
+  // The services pass --env-file-if-exists, added in Node 22.9. A floor below that would
+  // let the installer choose a Node that rejects the flag outright.
+  assert.ok(
+    floor[0] > 22 || (floor[0] === 22 && floor[1] >= 9),
+    `engines.node is ${pkg.engines.node}, but the plists pass --env-file-if-exists (Node >= 22.9)`,
+  );
 });

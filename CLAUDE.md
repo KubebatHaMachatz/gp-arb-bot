@@ -27,7 +27,7 @@
   `data/`, `*.db*`, `*.csv`, `*.bak` are gitignored. Venue keys are read from env only —
   never hardcoded, never logged, never echoed into a launchd plist (plists are
   world-readable 644).
-- **Zero runtime dependencies.** Node ≥22.5 builtins only (`node:sqlite`, `node:http`,
+- **Zero runtime dependencies.** Node ≥22.9 builtins only (`node:sqlite`, `node:http`,
   `node:test`, `fetch`). **One scoped exception, and not before A-11:**
   `@noble/curves` (pinned exact, no `^`/`~`) for the signing path, because `node:crypto`
   has neither Keccak-256 (its `sha3-256` is a *different* function — different padding,
@@ -152,6 +152,30 @@ a trace. Blank/whitespace-only counts as unset (`GPA_PORT=` means "I did not set
 | `GPA_TELEGRAM_BOT_TOKEN` | *(unset)* | — | Alerting. **Read from `process.env` directly, never through `loadConfig`** — anything in the config object is one `console.log(cfg)` from a log file. |
 | `GPA_TELEGRAM_CHAT_ID` | *(unset)* | — | Alerting. Inert unless **both** halves are set; half-configured says so once at startup. |
 
+### Where secrets go
+
+**`.env` in the repo root, mode 0600.** Copy `.env.example`. Node loads it itself via
+`--env-file-if-exists`, which the installed plists pass — no dotenv dependency, no import.
+
+`--env-file-if-exists`, not `--env-file`: the services must start on a machine with no
+`.env`, which is the normal state until somebody configures alerting. `--env-file` treats
+a missing file as fatal, turning "alerting not set up yet" into three crash-looping
+LaunchAgents.
+
+Running a script **by hand** does not get the flag. Either export the variables or pass it:
+
+```bash
+node --env-file-if-exists=.env scripts/watchdog.mjs
+```
+
+Two places a secret must **not** go:
+
+- **A launchd plist.** Mode 644 in `~/Library/LaunchAgents`, readable by every account on
+  the machine, and captured by Time Machine long after the value is rotated.
+  `lib/launchd.mjs` refuses to render one.
+- **`launchctl setenv`.** It publishes the value to *every* process in the GUI session, so
+  any program you run can read it back with `launchctl getenv`.
+
 **`GPA_FEED_STALE_MS_*` must exceed `GPA_MISS_SAMPLE_MS`, and startup enforces it.** The
 coupling is invisible from either knob alone: a healthy but quiet feed writes nothing for
 one whole sampling period *by design*, so a threshold at or below that period alerts on
@@ -186,7 +210,7 @@ only proves a port is free *right now*; a source grep proves nobody else claims 
 ## 5. Testing
 
 ```bash
-npm test          # full suite (Node >= 22.5)
+npm test          # full suite (Node >= 22.9)
 npm run coverage  # native line/branch coverage per lib file
 npm run mutate    # Stryker mutation score → reports/mutation/mutation.html
 ```
