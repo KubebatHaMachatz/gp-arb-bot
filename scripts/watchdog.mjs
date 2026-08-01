@@ -91,7 +91,10 @@ async function tick() {
     // A locked or briefly unreadable database is not an incident worth paging about, and
     // taking the watchdog down over one would remove the monitoring entirely.
     log('watchdog read failed:', err.message);
-    return;
+    // Reported as a READ FAILURE rather than as no data. The caller uses this to still
+    // announce startup: a watchdog that comes up unable to read the database is the case
+    // an operator most needs to hear about, and returning nothing would make it silent.
+    return { venues: [], feeds: [], readFailed: true };
   }
 
   let venues;
@@ -136,7 +139,7 @@ async function tick() {
     }
   }
 
-  return { venues, feeds: classified };
+  return { venues, feeds: classified, readFailed: false };
 }
 
 log(

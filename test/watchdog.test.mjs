@@ -415,3 +415,17 @@ test('the startup message never contains a credential-shaped value', () => {
   });
   assert.doesNotMatch(msg, /token|chat_id|GPA_TELEGRAM/i);
 });
+
+test('a database read failure is announced as blindness, not as "watching nothing"', () => {
+  // A watchdog that comes up unable to read is the case an operator most needs to hear
+  // about. Rendering it identically to a quiet, healthy start would hide it completely.
+  const msg = startupMessage({ venues: [], feeds: [], keepOppDays: 90, nowMs: NOW, readFailed: true });
+  assert.match(msg, /COULD NOT READ THE DATABASE/);
+  assert.doesNotMatch(msg, /no venues being watched/);
+});
+
+test('readFailed defaults to false, so a normal start reads normally', () => {
+  const msg = startupMessage({ venues: [], feeds: [], keepOppDays: 90, nowMs: NOW });
+  assert.match(msg, /no venues being watched/);
+  assert.doesNotMatch(msg, /COULD NOT READ/);
+});
