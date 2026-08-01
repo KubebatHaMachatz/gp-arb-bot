@@ -27,7 +27,7 @@
   `data/`, `*.db*`, `*.csv`, `*.bak` are gitignored. Venue keys are read from env only —
   never hardcoded, never logged, never echoed into a launchd plist (plists are
   world-readable 644).
-- **Zero runtime dependencies.** Node ≥22.5 builtins only (`node:sqlite`, `node:http`,
+- **Zero runtime dependencies.** Node ≥22.9 builtins only (`node:sqlite`, `node:http`,
   `node:test`, `fetch`). **One scoped exception, and not before A-11:**
   `@noble/curves` (pinned exact, no `^`/`~`) for the signing path, because `node:crypto`
   has neither Keccak-256 (its `sha3-256` is a *different* function — different padding,
@@ -210,7 +210,7 @@ only proves a port is free *right now*; a source grep proves nobody else claims 
 ## 5. Testing
 
 ```bash
-npm test          # full suite (Node >= 22.5)
+npm test          # full suite (Node >= 22.9)
 npm run coverage  # native line/branch coverage per lib file
 npm run mutate    # Stryker mutation score → reports/mutation/mutation.html
 ```

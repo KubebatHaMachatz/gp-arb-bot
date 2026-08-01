@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ import {
   flagValue,
   isDurableNodePath,
   labelFor,
+  parseEnginesFloor,
   plistFor,
   plistPath,
   selectServices,
@@ -70,8 +71,12 @@ function requireFlag(name) {
 const only = requireFlag('--service');
 const override = requireFlag('--node');
 
-/** Minimum runtime this repo needs, from package.json's `engines`. */
-const MIN_NODE = [22, 5];
+// Read from package.json rather than restated. A second literal here silently disagreed
+// with engines the moment --env-file-if-exists raised the floor, and the installer would
+// then have picked a Node that cannot run what it just installed.
+const MIN_NODE = parseEnginesFloor(
+  JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).engines?.node,
+);
 
 /** `vX.Y.Z` → [X, Y], or null when the binary did not answer. */
 function nodeVersionOf(path) {
